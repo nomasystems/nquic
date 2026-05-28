@@ -1,0 +1,21 @@
+{application, nquic, [
+    {description, "QUIC transport protocol (RFC 9000/9001/9002) for Erlang/OTP 27+"},
+    {vsn, "1.0.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        ssl,
+        public_key
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {maintainers, ["Nomasystems"]},
+    {minimum_otp_vsn, "27"},
+    {links, [
+        {"GitHub", "https://github.com/nomasystems/nquic"},
+        {"Changelog", "https://github.com/nomasystems/nquic/blob/main/CHANGELOG.md"}
+    ]}
+]}.

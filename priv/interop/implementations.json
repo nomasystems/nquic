@@ -1,0 +1,7 @@
+{
+  "nquic": {
+    "image": "ghcr.io/nomasystems/nquic-interop:latest",
+    "url": "https://github.com/nomasystems/nquic",
+    "role": "both"
+  }
+}

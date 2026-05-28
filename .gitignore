@@ -1,0 +1,48 @@
+# Rebar3 build artifacts
+.rebar3
+.rebar
+_build
+_checkouts
+_vendor
+rebar3.crashdump
+
+# Erlang artifacts
+*.beam
+*.o
+*.plt
+*.coverdata
+.eunit
+ebin
+cover
+doc
+erl_crash.dump
+*.dump
+.erlang.cookie
+
+# Common Test logs
+log
+logs
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea
+.vscode
+.zed
+*.iml
+
+# OS files
+.DS_Store
+
+# Nix / direnv
+.direnv
+.envrc
+
+# Project-local fixtures regenerated on demand
+test/conf/server.pem
+test/conf/server.key
+test/interop/www/large.bin
+test/interop/www/medium.bin
+priv/scripts/h3spec
+test/compliance_logs/

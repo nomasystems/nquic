@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        combo:
+        - otp-version: '27.0'
+          rebar3-version: '3.24.0'
+        - otp-version: '28.0'
+          rebar3-version: '3.25.0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1.24.0
+        with:
+          otp-version: ${{ matrix.combo.otp-version }}
+          rebar3-version: ${{ matrix.combo.rebar3-version }}
+
+      - uses: actions/cache@v4
+        id: rebar3-cache
+        with:
+          path: |
+            ~/.cache/rebar3
+            _build
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ matrix.combo.otp-version }}-${{ matrix.combo.rebar3-version }}-${{ hashFiles('rebar.config', 'rebar.lock') }}
+
+      - run: rebar3 check
+
+      - run: rebar3 test
+
+      - run: make compliance
+
+      - uses: test-summary/action@v2
+        if: always()
+        with:
+          paths: '_build/test/logs/**/report.xml'

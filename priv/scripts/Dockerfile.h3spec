@@ -1,0 +1,20 @@
+FROM debian:stable-slim
+
+# h3spec is a dynamically-linked Haskell binary; it needs libz and libgmp
+# at runtime in addition to the usual ca-certificates for the download.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libgmp10 \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG H3SPEC_VERSION=0.1.12
+RUN curl -fsSL \
+        "https://github.com/kazu-yamamoto/h3spec/releases/download/v${H3SPEC_VERSION}/h3spec-linux-x86_64" \
+        -o /usr/local/bin/h3spec \
+    && chmod +x /usr/local/bin/h3spec
+
+ENTRYPOINT ["h3spec"]
+
