@@ -22,6 +22,7 @@ builders module-qualified; the dependency is one-way.
 -export([
     build_app_packet/2,
     build_handshake_packet/2,
+    build_handshake_packets/2,
     build_initial_packet/2,
     build_initial_packet/3
 ]).
@@ -213,6 +214,103 @@ build_handshake_packet(Frames, State) ->
                     {ok, MaskedPacket, State2}
             end
     end.
+
+-doc """
+Build one or more Handshake-space packets from `Frames`, fragmenting the
+CRYPTO flight so that no datagram exceeds the path/peer UDP payload limit
+(`min(max_payload_size, peer max_udp_payload_size)`, RFC 9000 §14.1 and
+§18.2). Each batch becomes its own Handshake packet/datagram; oversized
+CRYPTO frames are split at their offset boundary (RFC 9000 §19.6) and
+reassemble on the peer. Without this split a large server flight (cert
+chain) is sent as one >1200-byte datagram, which Chromium/quiche drops on
+receipt (`ERR_MSG_TOO_BIG`) since it exceeds the peer's advertised
+`max_udp_payload_size`, stalling the handshake.
+
+Stops early and re-queues the unsent remainder if anti-amplification
+blocks a packet, so the rest is resent on the next flush / PTO.
+""".
+-spec build_handshake_packets([nquic_frame:t()], nquic_protocol:state()) ->
+    {ok, [iodata()], nquic_protocol:state()}.
+build_handshake_packets(Frames, State) ->
+    Budget = handshake_payload_budget(State),
+    Batches = batch_frames_by_budget(presplit_crypto_frames(Frames, Budget), Budget),
+    build_handshake_batches(Batches, State, []).
+
+-spec build_handshake_batches([[nquic_frame:t()]], nquic_protocol:state(), [iodata()]) ->
+    {ok, [iodata()], nquic_protocol:state()}.
+build_handshake_batches([], State, Acc) ->
+    {ok, lists:reverse(Acc), State};
+build_handshake_batches([Batch | Rest], State, Acc) ->
+    case build_handshake_packet(Batch, State) of
+        {ok, <<>>, State1} ->
+            {ok, lists:reverse(Acc), requeue_handshake_frames([Batch | Rest], State1)};
+        {ok, Packet, State1} ->
+            build_handshake_batches(Rest, State1, [Packet | Acc]);
+        {error, _, State1} ->
+            {ok, lists:reverse(Acc), State1}
+    end.
+
+-spec batch_frames_by_budget([nquic_frame:t()], pos_integer()) -> [[nquic_frame:t()]].
+batch_frames_by_budget(Frames, Budget) ->
+    batch_frames(Frames, Budget, 0, [], []).
+
+-spec batch_frames(
+    [nquic_frame:t()], pos_integer(), non_neg_integer(), [nquic_frame:t()], [[nquic_frame:t()]]
+) -> [[nquic_frame:t()]].
+batch_frames([], _Budget, _Used, [], Batches) ->
+    lists:reverse(Batches);
+batch_frames([], _Budget, _Used, Cur, Batches) ->
+    lists:reverse([lists:reverse(Cur) | Batches]);
+batch_frames([F | Rest], Budget, Used, Cur, Batches) ->
+    Size = iolist_size(nquic_frame:encode(F)),
+    case Cur of
+        [] ->
+            batch_frames(Rest, Budget, Size, [F], Batches);
+        _ when Used + Size =< Budget ->
+            batch_frames(Rest, Budget, Used + Size, [F | Cur], Batches);
+        _ ->
+            batch_frames(Rest, Budget, Size, [F], [lists:reverse(Cur) | Batches])
+    end.
+
+-spec handshake_payload_budget(nquic_protocol:state()) -> pos_integer().
+handshake_payload_budget(#conn_state{
+    dcid = DCID, scid = SCID, max_payload_size = MaxPayload, remote_params = RP
+}) ->
+    PeerMax =
+        case RP of
+            #transport_params{max_udp_payload_size = M} when is_integer(M), M >= 1200 -> M;
+            _ -> 1200
+        end,
+    Limit = min(MaxPayload, PeerMax),
+    Overhead = 1 + 4 + 1 + byte_size(DCID) + 1 + byte_size(SCID) + 2 + 4 + ?AEAD_TAG_SIZE,
+    max(1, Limit - Overhead).
+
+-spec presplit_crypto_frames([nquic_frame:t()], pos_integer()) -> [nquic_frame:t()].
+presplit_crypto_frames(Frames, Budget) ->
+    MaxData = max(1, Budget - 8),
+    lists:flatmap(fun(F) -> split_crypto_frame(F, MaxData) end, Frames).
+
+-spec requeue_handshake_frames([[nquic_frame:t()]], nquic_protocol:state()) ->
+    nquic_protocol:state().
+requeue_handshake_frames(Batches, #conn_state{flow = Flow} = State) ->
+    Remaining = lists:append(Batches),
+    Pending = Flow#conn_flow.pending_handshake_frames,
+    State#conn_state{
+        flow = Flow#conn_flow{pending_handshake_frames = Pending ++ lists:reverse(Remaining)}
+    }.
+
+-spec split_crypto_frame(nquic_frame:t(), pos_integer()) -> [nquic_frame:t()].
+split_crypto_frame(#crypto{offset = Off, data = Data}, MaxData) when byte_size(Data) > MaxData ->
+    split_crypto_data(Off, Data, MaxData, []);
+split_crypto_frame(Frame, _MaxData) ->
+    [Frame].
+
+-spec split_crypto_data(non_neg_integer(), binary(), pos_integer(), [#crypto{}]) -> [#crypto{}].
+split_crypto_data(Off, Data, MaxData, Acc) when byte_size(Data) > MaxData ->
+    <<Chunk:MaxData/binary, Rest/binary>> = Data,
+    split_crypto_data(Off + MaxData, Rest, MaxData, [#crypto{offset = Off, data = Chunk} | Acc]);
+split_crypto_data(Off, Data, _MaxData, Acc) ->
+    lists:reverse([#crypto{offset = Off, data = Data} | Acc]).
 
 -doc """
 Build an encrypted Initial-space packet from a list of frames.

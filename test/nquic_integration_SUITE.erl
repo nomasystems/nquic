@@ -965,9 +965,12 @@ compat_version_negotiation_default_v1_test(_Config) ->
     {ClientDrv, ServerDrv, Helper} = establish(Port, Listener),
 
     {ok, #conn_state{version = ServerVersion}} = nquic_ctx_driver:conn_state(ServerDrv),
-    {ok, #conn_state{version = ClientVersion}} = nquic_ctx_driver:conn_state(ClientDrv),
+    {ok, #conn_state{version = ClientVersion, remote_params = ClientRemote}} =
+        nquic_ctx_driver:conn_state(ClientDrv),
     ?assertEqual(1, ServerVersion),
     ?assertEqual(1, ClientVersion),
+    #transport_params{version_information = #{other_versions := Advertised}} = ClientRemote,
+    ?assertEqual([1], Advertised),
 
     teardown(ClientDrv, ServerDrv, Helper),
     catch gen_server:stop(Listener),

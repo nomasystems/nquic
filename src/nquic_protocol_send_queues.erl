@@ -152,14 +152,8 @@ flush_handshake(State) ->
     Frames = lists:reverse(Flow0#conn_flow.pending_handshake_frames),
     FlowEmpty = Flow0#conn_flow{pending_handshake_frames = []},
     State1 = State#conn_state{flow = FlowEmpty},
-    case nquic_protocol_send:build_handshake_packet(Frames, State1) of
-        {ok, <<>>, State2} ->
-            {[], State2};
-        {ok, Packet, State2} ->
-            {[Packet], State2};
-        {error, _, State2} ->
-            {[], State2}
-    end.
+    {ok, Packets, State2} = nquic_protocol_send:build_handshake_packets(Frames, State1),
+    {Packets, State2}.
 
 -spec flush_initial(nquic_protocol:state()) -> {[iodata()], nquic_protocol:state()}.
 flush_initial(#conn_state{flow = #conn_flow{pending_initial_frames = []}} = State) ->
