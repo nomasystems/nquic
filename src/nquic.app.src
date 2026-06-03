@@ -1,6 +1,6 @@
 {application, nquic, [
     {description, "QUIC transport protocol (RFC 9000/9001/9002) for Erlang/OTP 27+"},
-    {vsn, "1.0.0"},
+    {vsn, "1.0.1"},
     {registered, []},
     {applications, [
         kernel,
