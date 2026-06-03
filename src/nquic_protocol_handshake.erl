@@ -972,7 +972,7 @@ apply_server_compat_version_switch(NewVersion, State) ->
             undefined ->
                 #{
                     chosen_version => NewVersion,
-                    other_versions => nquic_packet:supported_versions()
+                    other_versions => State#conn_state.version_preference
                 };
             #{} ->
                 OldVI#{chosen_version => NewVersion}

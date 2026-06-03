@@ -89,9 +89,15 @@ new_conn_state(Opts) ->
     SessionTicket = maps:get(session_ticket, Opts, undefined),
 
     BaseParams = maps:get(transport_params, Opts, #transport_params{}),
+    VersionPref = maps:get(version_preference, Opts, [1]),
+    AvailableVersions =
+        case Role of
+            server -> VersionPref;
+            client -> nquic_packet:supported_versions()
+        end,
     VersionInfo = #{
         chosen_version => Version,
-        other_versions => nquic_packet:supported_versions()
+        other_versions => AvailableVersions
     },
     MaxIdleTimeout = nquic_conn_timers:idle_timeout_to_param(
         maps:get(idle_timeout, Opts, BaseParams#transport_params.max_idle_timeout)
@@ -178,7 +184,7 @@ new_conn_state(Opts) ->
         max_payload_size = maps:get(max_payload_size, Opts, 1200),
         local_params = LocalParams,
         version = Version,
-        version_preference = maps:get(version_preference, Opts, [1]),
+        version_preference = VersionPref,
         crypto = Crypto,
         streams_state = Streams,
         path = PathMgmt,

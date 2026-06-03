@@ -1638,6 +1638,68 @@ build_handshake_packet_no_keys_returns_error_test() ->
         nquic_protocol_send:build_handshake_packet([#ping{}], State)
     ).
 
+make_handshake_send_state(PeerMaxUdp) ->
+    Cipher = aes_128_gcm,
+    Secret = crypto:strong_rand_bytes(32),
+    {K, IV, HP} = nquic_keys:derive_packet_protection(Secret, Cipher, 1),
+    RoleKeys = nquic_keys:make_role_keys(Cipher, K, IV, HP),
+    RemoteParams =
+        case PeerMaxUdp of
+            undefined -> undefined;
+            _ -> #transport_params{max_udp_payload_size = PeerMaxUdp}
+        end,
+    #conn_state{
+        role = server,
+        version = 1,
+        dcid = <<1, 2, 3, 4, 5, 6, 7, 8>>,
+        scid = <<9, 10, 11, 12, 13, 14, 15, 16>>,
+        max_payload_size = 1200,
+        remote_params = RemoteParams,
+        crypto = #conn_crypto{cipher = Cipher, keys = #{handshake => #{server => RoleKeys}}},
+        pn_spaces = #{handshake => #{next_pn => 0}},
+        loss_state = nquic_loss:init(),
+        path = #conn_path_mgmt{address_validated = true},
+        flow = #conn_flow{},
+        gso_size = undefined
+    }.
+
+queue_handshake_flight(State0, Flight) ->
+    Flow = State0#conn_state.flow,
+    State0#conn_state{
+        flow = Flow#conn_flow{pending_handshake_frames = [#crypto{offset = 0, data = Flight}]}
+    }.
+
+build_handshake_packets_small_flight_single_packet_test() ->
+    State = queue_handshake_flight(make_handshake_send_state(1472), crypto:strong_rand_bytes(100)),
+    {Packets, _State1} = nquic_protocol_send_queues:flush_handshake(State),
+    ?assertEqual(1, length(Packets)).
+
+build_handshake_packets_splits_large_flight_test() ->
+    State = queue_handshake_flight(make_handshake_send_state(1472), crypto:strong_rand_bytes(4000)),
+    {Packets, _State1} = nquic_protocol_send_queues:flush_handshake(State),
+    ?assert(length(Packets) >= 4),
+    lists:foreach(
+        fun(P) -> ?assert(byte_size(iolist_to_binary(P)) =< 1200) end,
+        Packets
+    ).
+
+build_handshake_packets_respects_peer_max_udp_payload_test() ->
+    PeerMax = 1300,
+    State0 = (make_handshake_send_state(PeerMax))#conn_state{max_payload_size = 9000},
+    State = queue_handshake_flight(State0, crypto:strong_rand_bytes(6000)),
+    {Packets, _State1} = nquic_protocol_send_queues:flush_handshake(State),
+    ?assert(length(Packets) >= 2),
+    lists:foreach(
+        fun(P) -> ?assert(byte_size(iolist_to_binary(P)) =< PeerMax) end,
+        Packets
+    ).
+
+build_handshake_packets_distinct_packet_numbers_test() ->
+    State = queue_handshake_flight(make_handshake_send_state(1472), crypto:strong_rand_bytes(4000)),
+    {Packets, State1} = nquic_protocol_send_queues:flush_handshake(State),
+    HsSpace = maps:get(handshake, State1#conn_state.pn_spaces),
+    ?assertEqual(length(Packets), maps:get(next_pn, HsSpace)).
+
 build_initial_packet_no_keys_returns_error_test() ->
     State = #conn_state{
         role = client,
