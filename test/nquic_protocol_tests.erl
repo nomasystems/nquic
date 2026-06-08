@@ -1675,13 +1675,23 @@ build_handshake_packets_small_flight_single_packet_test() ->
     ?assertEqual(1, length(Packets)).
 
 build_handshake_packets_splits_large_flight_test() ->
-    State = queue_handshake_flight(make_handshake_send_state(1472), crypto:strong_rand_bytes(4000)),
+    PeerMax = 1472,
+    State = queue_handshake_flight(
+        make_handshake_send_state(PeerMax), crypto:strong_rand_bytes(4000)
+    ),
     {Packets, _State1} = nquic_protocol_send_queues:flush_handshake(State),
-    ?assert(length(Packets) >= 4),
+    ?assert(length(Packets) >= 2),
     lists:foreach(
-        fun(P) -> ?assert(byte_size(iolist_to_binary(P)) =< 1200) end,
+        fun(P) -> ?assert(byte_size(iolist_to_binary(P)) =< PeerMax) end,
         Packets
     ).
+
+build_handshake_packets_large_peer_keeps_flight_single_test() ->
+    State = queue_handshake_flight(
+        make_handshake_send_state(65527), crypto:strong_rand_bytes(1500)
+    ),
+    {Packets, _State1} = nquic_protocol_send_queues:flush_handshake(State),
+    ?assertEqual(1, length(Packets)).
 
 build_handshake_packets_respects_peer_max_udp_payload_test() ->
     PeerMax = 1300,
