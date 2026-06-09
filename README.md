@@ -8,7 +8,7 @@ Pure Erlang QUIC transport for Erlang/OTP 27+.
 ## Getting started
 
 ```erlang
-{deps, [{nquic, "1.0.1"}]}.
+{deps, [{nquic, "1.0.2"}]}.
 ```
 
 ### Client

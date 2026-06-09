@@ -274,16 +274,15 @@ batch_frames([F | Rest], Budget, Used, Cur, Batches) ->
 
 -spec handshake_payload_budget(nquic_protocol:state()) -> pos_integer().
 handshake_payload_budget(#conn_state{
-    dcid = DCID, scid = SCID, max_payload_size = MaxPayload, remote_params = RP
+    dcid = DCID, scid = SCID, remote_params = RP
 }) ->
     PeerMax =
         case RP of
             #transport_params{max_udp_payload_size = M} when is_integer(M), M >= 1200 -> M;
             _ -> 1200
         end,
-    Limit = min(MaxPayload, PeerMax),
     Overhead = 1 + 4 + 1 + byte_size(DCID) + 1 + byte_size(SCID) + 2 + 4 + ?AEAD_TAG_SIZE,
-    max(1, Limit - Overhead).
+    PeerMax - Overhead.
 
 -spec presplit_crypto_frames([nquic_frame:t()], pos_integer()) -> [nquic_frame:t()].
 presplit_crypto_frames(Frames, Budget) ->
