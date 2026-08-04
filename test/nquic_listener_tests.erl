@@ -427,7 +427,11 @@ stop_listener(Pid) when is_pid(Pid) ->
     case is_process_alive(Pid) of
         true ->
             unlink(Pid),
-            catch gen_server:stop(Pid, normal, 5000);
+            try
+                gen_server:stop(Pid, normal, 5000)
+            catch
+                _:_ -> ok
+            end;
         false ->
             ok
     end.

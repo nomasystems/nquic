@@ -67,7 +67,7 @@ warm_waves_conn_handler_test(_Config) ->
     Expected = ?WAVES * ?CONCURRENCY * ?REQS_PER_CONN,
     ct:pal("conn_handler warm waves: requests_ok=~p expected=~p", [OkTotal, Expected]),
 
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ?assertEqual(Expected, OkTotal).
 
 reproduce_accept_handoff_on_head() ->
@@ -88,10 +88,10 @@ reproduce_accept_handoff_on_head() ->
             error(acceptor_report_timeout)
         end,
 
-    lists:foreach(fun(P) -> catch P ! stop end, Owners),
+    lists:foreach(fun(P) -> P ! stop end, Owners),
     unlink(Acceptor),
     exit(Acceptor, shutdown),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     #{orphaned_packets => Orphans, requests_ok => OkTotal, connections => length(Owners)}.
 
 run_wave(Port, Wave) ->
@@ -116,7 +116,7 @@ client_proc(Parent, Port, Wave, Index) ->
     case nquic_ctx_driver:connect("127.0.0.1", Port, ConnOpts) of
         {ok, Drv} ->
             Ok = do_requests(Drv, Wave, Index, ?REQS_PER_CONN, 0),
-            catch nquic_ctx_driver:close(Drv),
+            try_ignore(fun() -> nquic_ctx_driver:close(Drv) end),
             Parent ! {client_ok, self(), Ok};
         {error, _Reason} ->
             Parent ! {client_ok, self(), 0}
@@ -186,7 +186,7 @@ owner_init(RawCtx) ->
             {ok, Ctx3} = nquic_lib:flush(Ctx2),
             owner_serve(echo_events(Events, Ctx3));
         {error, _Reason, Ctx2} ->
-            catch nquic_lib:close(Ctx2)
+            try_ignore(fun() -> nquic_lib:close(Ctx2) end)
     end.
 
 owner_serve(Ctx) ->
@@ -202,9 +202,9 @@ owner_serve(Ctx) ->
         {quic_timeout, Type} ->
             owner_after_io(nquic_lib:timeout(Ctx, Type));
         {quic_drain, _Listener} ->
-            catch nquic_lib:close(Ctx);
+            try_ignore(fun() -> nquic_lib:close(Ctx) end);
         stop ->
-            catch nquic_lib:close(Ctx);
+            try_ignore(fun() -> nquic_lib:close(Ctx) end);
         _Other ->
             owner_serve(Ctx)
     end.
@@ -213,7 +213,7 @@ owner_after_io({ok, Events, Ctx1}) ->
     {ok, Ctx2} = nquic_lib:flush(Ctx1),
     owner_serve(echo_events(Events, Ctx2));
 owner_after_io({error, _Reason, Ctx1}) ->
-    catch nquic_lib:close(Ctx1).
+    try_ignore(fun() -> nquic_lib:close(Ctx1) end).
 
 echo_events([], Ctx) ->
     Ctx;
@@ -266,4 +266,11 @@ find_project_root(Dir) ->
     case filelib:is_file(filename:join(Dir, "rebar.config")) of
         true -> Dir;
         false -> find_project_root(filename:dirname(Dir))
+    end.
+
+try_ignore(Fun) ->
+    try
+        Fun()
+    catch
+        _:_ -> ok
     end.

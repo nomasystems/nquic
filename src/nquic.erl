@@ -531,7 +531,11 @@ await_client_export(Pid, MRef, Timeout) ->
             client_down_error(Reason)
     after Timeout ->
         demonitor(MRef, [flush]),
-        catch gen_statem:stop(Pid),
+        try
+            gen_statem:stop(Pid)
+        catch
+            _:_ -> ok
+        end,
         nquic_error:timeout(handshake)
     end.
 

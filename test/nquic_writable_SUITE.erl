@@ -55,7 +55,7 @@ is_writable_api_test(_Config) ->
     ?assertNot(nquic_ctx_driver:is_writable(ClientDrv, SId)),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 %%%-------------------------------------------------------------------
@@ -88,7 +88,7 @@ send_sync_blocks_until_buffer_drains_test(_Config) ->
     end,
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 send_sync_times_out_when_buffer_stays_full_test(_Config) ->
@@ -112,8 +112,8 @@ send_sync_times_out_when_buffer_stays_full_test(_Config) ->
     Result = nquic_ctx_driver:send(ClientDrv, SId, Payload, 200),
     ?assertEqual({error, {timeout, send}}, Result),
 
-    catch nquic_ctx_driver:close(ClientDrv),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> nquic_ctx_driver:close(ClientDrv) end),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 send4_one_mib_over_constrained_window_completes_test(_Config) ->
@@ -150,7 +150,7 @@ send4_one_mib_over_constrained_window_completes_test(_Config) ->
     end,
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 send4_per_call_timeout_overrides_send_timeout_test(_Config) ->
@@ -177,8 +177,8 @@ send4_per_call_timeout_overrides_send_timeout_test(_Config) ->
     ?assert(Elapsed >= 200),
     ?assert(Elapsed < 5000),
 
-    catch nquic_ctx_driver:close(ClientDrv),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> nquic_ctx_driver:close(ClientDrv) end),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 send4_completes_when_slow_reader_resumes_test(_Config) ->
@@ -216,7 +216,7 @@ send4_completes_when_slow_reader_resumes_test(_Config) ->
     end,
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 %%%-----------------------------------------------------------------------------
@@ -255,8 +255,8 @@ establish(Port, Listener) ->
     {ClientDrv, ServerDrv, Helper}.
 
 teardown(ClientDrv, ServerDrv, Helper) ->
-    catch nquic_ctx_driver:close(ClientDrv),
-    catch nquic_ctx_driver:close(ServerDrv),
+    try_ignore(fun() -> nquic_ctx_driver:close(ClientDrv) end),
+    try_ignore(fun() -> nquic_ctx_driver:close(ServerDrv) end),
     Helper ! stop,
     ok.
 
@@ -312,4 +312,11 @@ find_project_root(Dir) ->
     case filelib:is_file(filename:join(Dir, "rebar.config")) of
         true -> Dir;
         false -> find_project_root(filename:dirname(Dir))
+    end.
+
+try_ignore(Fun) ->
+    try
+        Fun()
+    catch
+        _:_ -> ok
     end.
