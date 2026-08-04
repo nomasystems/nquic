@@ -72,7 +72,7 @@ passive_echo_test(_Config) ->
     ?assertEqual(<<"world">>, RespData),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 library_mode_test(_Config) ->
@@ -102,7 +102,7 @@ library_mode_test(_Config) ->
 
     {ok, _} = nquic_lib:close(ServerCtx3),
     {ok, _} = nquic_lib:close(ClientCtx3),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 library_mode_takeover_test(_Config) ->
@@ -117,7 +117,7 @@ library_mode_takeover_test(_Config) ->
         lists:seq(1, 3)
     ),
 
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 takeover_iteration(Listener, Port) ->
@@ -154,7 +154,7 @@ takeover_iteration(Listener, Port) ->
     after 5000 ->
         ct:fail(handler_shutdown_timeout)
     end,
-    catch nquic_ctx_driver:close(ClientDrv),
+    try_ignore(fun() -> nquic_ctx_driver:close(ClientDrv) end),
     timer:sleep(50),
     ok.
 
@@ -229,8 +229,13 @@ concurrent_connections_test(_Config) ->
         ClientPids
     ),
 
-    lists:foreach(fun(SD) -> catch nquic_ctx_driver:close(SD) end, ServerDrvs),
-    catch gen_server:stop(Listener),
+    lists:foreach(
+        fun(SD) ->
+            try_ignore(fun() -> nquic_ctx_driver:close(SD) end)
+        end,
+        ServerDrvs
+    ),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 stream_fin_test(_Config) ->
@@ -251,7 +256,7 @@ stream_fin_test(_Config) ->
     ?assertEqual(<<"part2">>, Data2),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 peercert_test(_Config) ->
@@ -262,7 +267,7 @@ peercert_test(_Config) ->
     {error, {tls, no_peercert}} = nquic_ctx_driver:peercert(ServerDrv),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 connection_info_test(_Config) ->
@@ -296,7 +301,7 @@ connection_info_test(_Config) ->
     ?assert(maps:get(streams_open, Info1) >= 1),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 retry_echo_test(_Config) ->
@@ -317,7 +322,7 @@ retry_echo_test(_Config) ->
     ?assertEqual(<<"retry_world">>, RespData),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 multi_instance_isolation_test(_Config) ->
@@ -440,7 +445,7 @@ multi_instance_isolation_test(_Config) ->
                     }
                 ),
                 ?assert(is_process_alive(ClientDrv)),
-                catch nquic_ctx_driver:close(ClientDrv);
+                try_ignore(fun() -> nquic_ctx_driver:close(ClientDrv) end);
             (_) ->
                 ok
         end,
@@ -450,7 +455,7 @@ multi_instance_isolation_test(_Config) ->
     lists:foreach(
         fun
             (#{id := I, listener := Listener, cache := Cache}) when I > 1 ->
-                catch gen_server:stop(Listener),
+                try_ignore(fun() -> gen_server:stop(Listener) end),
                 nquic_session_cache:stop(Cache);
             (#{cache := Cache}) ->
                 nquic_session_cache:stop(Cache)
@@ -486,7 +491,7 @@ server_per_conn_fd_echo_test(_Config) ->
     ok = wait_for_sockname_change(ServerDrv, ListenPort, 50, 100),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 server_per_conn_fd_lib_mode_test(_Config) ->
@@ -520,7 +525,7 @@ server_per_conn_fd_lib_mode_test(_Config) ->
 
     {ok, _} = nquic_lib:close(ServerCtx3),
     {ok, _} = nquic_lib:close(ClientCtx3),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 library_mode_recv_batch_test(_Config) ->
@@ -547,7 +552,7 @@ library_mode_recv_batch_test(_Config) ->
 
     {ok, _} = nquic_lib:close(ServerCtx3),
     {ok, _} = nquic_lib:close(ClientCtx3),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 library_mode_flush_notimers_test(_Config) ->
@@ -569,7 +574,7 @@ library_mode_flush_notimers_test(_Config) ->
     ?assertEqual(<<"noflush_hi">>, Data),
 
     {ok, _} = nquic_lib:close(ClientCtx3),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 library_mode_upgrade_recv_batch_test(_Config) ->
@@ -604,7 +609,7 @@ library_mode_upgrade_recv_batch_test(_Config) ->
 
     {ok, _} = nquic_lib:close(ServerCtx3),
     {ok, _} = nquic_lib:close(ClientCtx3),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 %%%-------------------------------------------------------------------
@@ -637,7 +642,7 @@ datagram_roundtrip_test(_Config) ->
     ?assertEqual({ok, <<"pong-dgram">>}, poll_datagram(ClientDrv, 50)),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 poll_datagram(_Drv, 0) ->
@@ -773,8 +778,8 @@ establish(Port, Listener, ConnOpts) ->
     {ClientDrv, ServerDrv, Helper}.
 
 teardown(ClientDrv, ServerDrv, Helper) ->
-    catch nquic_ctx_driver:close(ClientDrv),
-    catch nquic_ctx_driver:close(ServerDrv),
+    try_ignore(fun() -> nquic_ctx_driver:close(ClientDrv) end),
+    try_ignore(fun() -> nquic_ctx_driver:close(ServerDrv) end),
     Helper ! stop,
     ok.
 
@@ -814,7 +819,7 @@ concurrent_client(Parent, Port, Index) ->
         stop -> ok
     after 15000 -> ok
     end,
-    catch nquic_ctx_driver:close(Drv),
+    try_ignore(fun() -> nquic_ctx_driver:close(Drv) end),
     Parent ! {client_done, self()}.
 
 verify_server_recv(ServerDrv) ->
@@ -956,7 +961,7 @@ compat_version_negotiation_v2_test(_Config) ->
     ?assertEqual(16#6b3343cf, ClientVersion),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 compat_version_negotiation_default_v1_test(_Config) ->
@@ -973,7 +978,7 @@ compat_version_negotiation_default_v1_test(_Config) ->
     ?assertEqual([1], Advertised),
 
     teardown(ClientDrv, ServerDrv, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 server_short_stream_reclamation_test(_Config) ->
@@ -1019,7 +1024,7 @@ server_short_stream_reclamation_test(_Config) ->
     unlink(Acceptor),
     exit(Acceptor, shutdown),
     teardown(ClientConn, ServerConn, Helper),
-    catch gen_server:stop(Listener),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
 
 recl_client_request(ClientConn, Payload) ->
@@ -1037,7 +1042,8 @@ recl_client_drain(ClientConn, StreamId) ->
     end.
 
 recl_server_accept_loop(ServerConn) ->
-    case catch nquic_ctx_driver:accept_stream(ServerConn, 10000) of
+    Result = try_ignore(fun() -> nquic_ctx_driver:accept_stream(ServerConn, 10000) end),
+    case Result of
         {ok, StreamId} ->
             spawn(fun() -> recl_server_echo_loop(ServerConn, StreamId) end),
             recl_server_accept_loop(ServerConn);
@@ -1074,3 +1080,10 @@ recl_median([]) ->
 recl_median(L) ->
     Sorted = lists:sort(L),
     lists:nth((length(Sorted) div 2) + 1, Sorted).
+
+try_ignore(Fun) ->
+    try
+        Fun()
+    catch
+        _:_ -> ok
+    end.

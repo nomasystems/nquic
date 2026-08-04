@@ -137,7 +137,7 @@ maybe_echo(Sid, Ctx) ->
     end.
 
 close(Ctx) ->
-    _ = (catch nquic_lib:close(Ctx)),
+    _ = try_ignore(fun() -> nquic_lib:close(Ctx) end),
     exit(normal).
 
 close_error(Ctx, Reason) ->
@@ -145,5 +145,12 @@ close_error(Ctx, Reason) ->
         error_code => nquic_protocol:error_code(Reason),
         reason => nquic_protocol:error_to_reason_phrase(Reason)
     },
-    _ = (catch nquic_lib:close(Ctx, CloseOpts)),
+    _ = try_ignore(fun() -> nquic_lib:close(Ctx, CloseOpts) end),
     exit(normal).
+
+try_ignore(Fun) ->
+    try
+        Fun()
+    catch
+        _:_ -> ok
+    end.

@@ -50,9 +50,7 @@ single_conn_handler_echo_test(_Config) ->
     {ok, Data, fin} = recv_all(Drv, Sid, 5000),
     ?assertEqual(<<"hello-handler">>, Data),
 
-    catch nquic_ctx_driver:close(Drv),
-    catch gen_server:stop(Listener),
-    ok.
+    try_stop_drv_listener(Drv, Listener).
 
 multi_request_handler_echo_test(_Config) ->
     {ok, Listener} = start_listener_handler(0),
@@ -71,9 +69,7 @@ multi_request_handler_echo_test(_Config) ->
         lists:seq(1, 20)
     ),
 
-    catch nquic_ctx_driver:close(Drv),
-    catch gen_server:stop(Listener),
-    ok.
+    try_stop_drv_listener(Drv, Listener).
 
 verify_peer_handshake_test(_Config) ->
     {ok, Listener} = start_listener_handler(0),
@@ -95,9 +91,7 @@ verify_peer_handshake_test(_Config) ->
     {ok, Data, fin} = recv_all(Drv, Sid, 5000),
     ?assertEqual(<<"verify-peer">>, Data),
 
-    catch nquic_ctx_driver:close(Drv),
-    catch gen_server:stop(Listener),
-    ok.
+    try_stop_drv_listener(Drv, Listener).
 
 server_cert_der() ->
     PemPath = filename:join(conf_dir(), "server.pem"),
@@ -129,6 +123,18 @@ start_listener_handler(Port) ->
         conn_handler => nquic_echo_handler
     },
     nquic:listen(Port, ListenOpts).
+
+try_stop_drv_listener(Drv, Listener) ->
+    try
+        nquic_ctx_driver:close(Drv)
+    catch
+        _:_ -> ok
+    end,
+    try
+        gen_server:stop(Listener)
+    catch
+        _:_ -> ok
+    end.
 
 conf_dir() ->
     SrcFile = code:which(?MODULE),

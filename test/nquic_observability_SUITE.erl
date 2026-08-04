@@ -65,8 +65,8 @@ metrics_counts_traffic_test(_Config) ->
     ?assert(maps:get(packets_in, M) > 0),
     ?assert(maps:get(conns_established, M) >= 1),
     ?assertEqual(0, maps:get(packets_dropped_mailbox, M)),
-    catch nquic_ctx_driver:close(ClientDrv),
-    catch nquic_ctx_driver:close(ServerDrv),
+    try_ignore(fun() -> nquic_ctx_driver:close(ClientDrv) end),
+    try_ignore(fun() -> nquic_ctx_driver:close(ServerDrv) end),
     stop_listener(Listener),
     ok.
 
@@ -114,7 +114,7 @@ start_listener() ->
     nquic:listen(0, ListenOpts).
 
 stop_listener(Listener) ->
-    catch nquic:stop_listener(Listener),
+    try_ignore(fun() -> nquic:stop_listener(Listener) end),
     ok.
 
 connect_drv(Port) ->
@@ -128,7 +128,8 @@ accept_drv(Listener) ->
 wait_for(_Pred, RemainingMs) when RemainingMs =< 0 ->
     timeout;
 wait_for(Pred, RemainingMs) ->
-    case catch Pred() of
+    Result = try_ignore(fun() -> Pred() end),
+    case Result of
         true ->
             ok;
         _ ->
@@ -145,4 +146,11 @@ find_project_root(Dir) ->
     case filelib:is_file(filename:join(Dir, "rebar.config")) of
         true -> Dir;
         false -> find_project_root(filename:dirname(Dir))
+    end.
+
+try_ignore(Fun) ->
+    try
+        Fun()
+    catch
+        _:_ -> ok
     end.

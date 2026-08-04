@@ -92,7 +92,11 @@ partition_crash_is_restarted_with_fresh_pid_test() ->
 
 cleanup(Sup, Dispatch) ->
     unlink(Sup),
-    catch exit(Sup, shutdown),
+    try
+        exit(Sup, shutdown)
+    catch
+        _:_ -> ok
+    end,
     drain_exits(),
     nquic_dispatch:destroy(Dispatch).
 
