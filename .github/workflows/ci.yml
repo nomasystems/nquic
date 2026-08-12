@@ -23,6 +23,8 @@ jobs:
           rebar3-version: '3.24.0'
         - otp-version: '28.0'
           rebar3-version: '3.25.0'
+        - otp-version: '29.0'
+          rebar3-version: '3.27.0'
 
     steps:
       - uses: actions/checkout@v4
