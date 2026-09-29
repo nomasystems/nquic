@@ -106,7 +106,13 @@ make_sockaddr({A, B, C, D, E, F, G, H}, Port) when
     Port >= 0,
     Port =< 65535
 ->
-    #{family => inet6, addr => {A, B, C, D, E, F, G, H}, port => Port}.
+    #{
+        family => inet6,
+        addr => {A, B, C, D, E, F, G, H},
+        port => Port,
+        flowinfo => 0,
+        scope_id => 0
+    }.
 
 -doc "Open a UDP socket on an ephemeral port.".
 -spec open(open_opts()) -> {ok, t()} | {error, nquic_error:any_reason()}.
@@ -393,9 +399,9 @@ make_bind_addr(inet, any, Port) ->
 make_bind_addr(inet, {_, _, _, _} = Addr, Port) ->
     #{family => inet, addr => Addr, port => Port};
 make_bind_addr(inet6, any, Port) ->
-    #{family => inet6, addr => any, port => Port};
+    #{family => inet6, addr => any, port => Port, flowinfo => 0, scope_id => 0};
 make_bind_addr(inet6, {_, _, _, _, _, _, _, _} = Addr, Port) ->
-    #{family => inet6, addr => Addr, port => Port}.
+    #{family => inet6, addr => Addr, port => Port, flowinfo => 0, scope_id => 0}.
 
 -spec maybe_set_ecn(t(), open_opts()) -> ok | {error, nquic_error:any_reason()}.
 maybe_set_ecn(Socket, Opts) ->
