@@ -70,6 +70,8 @@ process_datagram(Bin, State, EventsAcc) ->
                 {error, _, _} = Error ->
                     Error
             end;
+        {ok, #long_header{type = retry}, _} ->
+            {ok, lists:reverse(EventsAcc), State};
         {ok, #short_header{} = Header, Rest} ->
             case handle_single_packet(Bin, Rest, Header, State) of
                 {ok, NewEvents, NewState} ->
