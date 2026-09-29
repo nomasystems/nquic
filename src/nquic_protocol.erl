@@ -589,7 +589,7 @@ odcid(#conn_state{odcid = ODCID}) -> ODCID.
 -doc "Open a new stream. Returns `{ok, StreamId, State}` on success.".
 -spec open_stream(#{type => bidi | uni}, state()) ->
     {ok, nquic:stream_id(), state()} | {error, term()}.
-open_stream(Opts0, State) ->
+open_stream(Opts, State) ->
     #conn_state{streams_state = SS} = State,
     #conn_streams{
         next_bidi_stream = NextBidi,
@@ -598,11 +598,6 @@ open_stream(Opts0, State) ->
         peer_max_streams_bidi = MaxBidi,
         peer_max_streams_uni = MaxUni
     } = SS,
-    Opts =
-        case Opts0 of
-            [] -> #{};
-            _ -> Opts0
-        end,
     Type = maps:get(type, Opts, bidi),
     case Type of
         bidi when NextBidi div 4 >= MaxBidi ->

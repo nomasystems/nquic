@@ -104,7 +104,9 @@ decrypt_unmasked(Cipher, Keys, PN, AAD, CT) ->
     end.
 
 -doc "Encode a QUIC packet header to binary.".
--spec encode_header(header()) -> binary().
+-spec encode_header(
+    #long_header{type :: initial | rtt0 | handshake | retry} | #short_header{}
+) -> binary().
 encode_header(#long_header{
     type = Type,
     version = Ver,
@@ -186,7 +188,7 @@ maybe_extract_key_phase(H, _) ->
     H.
 
 -doc "Map packet type atom to header bits for the given QUIC version.".
--spec packet_type_bits(atom(), non_neg_integer()) -> 0..3.
+-spec packet_type_bits(initial | rtt0 | handshake | retry, non_neg_integer()) -> 0..3.
 packet_type_bits(Type, ?QUIC_V2) ->
     case Type of
         initial -> 1;

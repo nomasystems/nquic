@@ -796,7 +796,7 @@ process_datagram(Bin, InitialState, CurrentState, Data, RevActions) ->
     end.
 
 -spec start_client_recv(#conn_state{}) ->
-    gen_statem:event_handler_result(state_name()).
+    gen_statem:event_handler_result(state_name(), #conn_state{}).
 start_client_recv(#conn_state{role = server, listener = Listener} = Data) when
     Listener =/= undefined
 ->

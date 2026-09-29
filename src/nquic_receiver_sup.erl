@@ -17,7 +17,7 @@ manager pid (`listener` opt) without extra round-trips.
 -export([start_link/1]).
 -export([init/1]).
 
--spec init(map()) ->
+-spec init(#{dispatch := nquic_dispatch:t(), opts := map()}) ->
     {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init(#{dispatch := Dispatch, opts := Opts}) ->
     N = maps:get(receivers, Opts, 1),
