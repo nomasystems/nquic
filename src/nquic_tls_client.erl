@@ -665,6 +665,8 @@ server_hello_key_share(<<Group:16, _KLen:16, K/binary>>) ->
 
 -spec split_finished([binary()]) ->
     {ok, {[binary()], binary()}} | {error, nquic_error:any_reason()}.
+split_finished([]) ->
+    {error, finished_not_found};
 split_finished(Messages) ->
     case lists:last(Messages) of
         <<20:8, _/binary>> = Fin ->
