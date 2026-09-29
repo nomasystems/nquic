@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Include `flowinfo` and `scope_id` in IPv6 sockaddr maps, as `socket:sockaddr_in6()` requires
 - Correct type specs flagged by set-theoretic type checking, including the missing `aes_256_gcm` in `nquic_crypto`
 
-## [1.0.2] - 2026-08-12
+## [1.0.3] - 2026-08-12
 
 ### Added
 
