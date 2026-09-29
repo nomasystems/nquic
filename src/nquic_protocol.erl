@@ -484,6 +484,10 @@ handle_timeout(pto, State) ->
     {ok, State3} = nquic_protocol_send_queues:queue_app_frame(#ping{}, State2),
     TimerActions = nquic_protocol_timer:compute_pto_timer_actions(State3),
     {ok, [], State3, TimerActions};
+handle_timeout(
+    path_validation, #conn_state{path = #conn_path_mgmt{path_state = undefined}} = State
+) ->
+    {ok, [], State, []};
 handle_timeout(path_validation, State) ->
     #conn_state{path = #conn_path_mgmt{path_state = PS} = Path0} = State,
     case nquic_path:is_validating(PS) of
