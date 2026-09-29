@@ -29,7 +29,7 @@
 
 -record(conn_crypto, {
     tls_state :: term(),
-    keys = #{} :: #{nquic_packet:space() | rtt0 => map()},
+    keys = #{} :: nquic_keys:key_map(),
     app_send_keys :: map() | undefined,
     app_recv_keys :: map() | undefined,
     crypto_buffer = #{} :: #{nquic_packet:space() => {non_neg_integer(), binary(), list()}},

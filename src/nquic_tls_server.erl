@@ -347,8 +347,8 @@ the PSK and whether 0-RTT should be accepted.
 StaticKey is the server's ticket encryption key.
 ClientHelloBin is the raw ClientHello (needed for binder verification).
 """.
--spec validate_psk_offer(map(), binary(), binary(), atom()) ->
-    {ok, binary(), atom(), boolean(), binary()} | {error, term()}.
+-spec validate_psk_offer(map(), binary(), binary(), nquic_keys:cipher()) ->
+    {ok, binary(), nquic_keys:cipher(), boolean(), binary()} | {error, term()}.
 validate_psk_offer(PSKInfo, ClientHelloBin, StaticKey, NegCipher) ->
     #{identities := Identities, binders := Binders, early_data := HasEarlyData} = PSKInfo,
     validate_psk_identities(
@@ -667,9 +667,9 @@ compute_binders_wire_len(Binders) ->
     [binary()],
     binary(),
     binary(),
-    atom(),
+    nquic_keys:cipher(),
     boolean()
-) -> {ok, binary(), atom(), boolean(), binary()} | {error, term()}.
+) -> {ok, binary(), nquic_keys:cipher(), boolean(), binary()} | {error, term()}.
 validate_psk_identities([], _, _, _, _, _) ->
     {error, no_matching_psk};
 validate_psk_identities(

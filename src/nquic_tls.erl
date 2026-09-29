@@ -76,7 +76,7 @@ Decrypt a ticket value using the server's static key.
 Returns {ok, PSK, Cipher} on success, {error, Reason} on failure.
 """.
 -spec decrypt_ticket(binary(), binary()) ->
-    {ok, binary(), atom()} | {error, term()}.
+    {ok, binary(), nquic_keys:cipher()} | {error, term()}.
 decrypt_ticket(TicketValue, StaticKey) ->
     try
         case byte_size(TicketValue) of
@@ -99,14 +99,14 @@ decrypt_ticket(TicketValue, StaticKey) ->
         error:_ -> {error, ticket_decrypt_failed}
     end.
 
--spec parse_cipher_atom(binary()) -> {ok, atom()} | error.
+-spec parse_cipher_atom(binary()) -> {ok, nquic_keys:cipher()} | error.
 parse_cipher_atom(<<"aes_128_gcm">>) -> {ok, aes_128_gcm};
 parse_cipher_atom(<<"aes_256_gcm">>) -> {ok, aes_256_gcm};
 parse_cipher_atom(<<"chacha20_poly1305">>) -> {ok, chacha20_poly1305};
 parse_cipher_atom(_) -> error.
 
 -spec parse_ticket_plain(binary()) ->
-    {ok, binary(), atom()} | {error, invalid_ticket_cipher | invalid_ticket_format}.
+    {ok, binary(), nquic_keys:cipher()} | {error, invalid_ticket_cipher | invalid_ticket_format}.
 parse_ticket_plain(Plain) ->
     case Plain of
         <<PSK:48/binary, CipherBin/binary>> ->
@@ -124,7 +124,7 @@ parse_ticket_plain(Plain) ->
     end.
 
 -spec try_32byte_psk(binary()) ->
-    {ok, binary(), atom()} | {error, invalid_ticket_cipher | invalid_ticket_format}.
+    {ok, binary(), nquic_keys:cipher()} | {error, invalid_ticket_cipher | invalid_ticket_format}.
 try_32byte_psk(<<PSK:32/binary, CipherBin/binary>>) ->
     case parse_cipher_atom(CipherBin) of
         {ok, Cipher} -> {ok, PSK, Cipher};
