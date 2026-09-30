@@ -1184,6 +1184,20 @@ process_handshake_messages_psk_early_data_test() ->
     ),
     ?assertEqual(true, maps:get(zero_rtt_accepted, AppKeys)).
 
+process_handshake_messages_empty_flight_test_() ->
+    State = #{transcript_ctx => crypto:hash_init(sha256), server_secret => <<0:256>>},
+    Secret = <<0:256>>,
+    [
+        ?_assertEqual(
+            {error, finished_not_found},
+            nquic_tls_client:process_handshake_messages(<<>>, Secret, State)
+        ),
+        ?_assertEqual(
+            {error, finished_not_found},
+            nquic_tls_client:process_handshake_messages_psk(<<>>, Secret, State)
+        )
+    ].
+
 make_client_hello_maybe_psk_no_ticket_test() ->
     TP = #transport_params{initial_source_connection_id = <<1, 2, 3, 4>>},
     {ok, CHBin, State} = nquic_protocol_handshake:make_client_hello_maybe_psk(

@@ -17,7 +17,7 @@
     delay :: non_neg_integer(),
     first_ack_range :: non_neg_integer(),
     ack_ranges = [] :: [#ack_range{}],
-    ecn_counts :: term() | undefined
+    ecn_counts :: {non_neg_integer(), non_neg_integer(), non_neg_integer()} | undefined
 }).
 
 -record(reset_stream, {

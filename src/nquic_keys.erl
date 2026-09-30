@@ -35,10 +35,18 @@ connection ID generation.
     update_traffic_secret/3
 ]).
 
--export_type([role/0, role_keys/0]).
+-export_type([cipher/0, key_map/0, packet_keys/0, role/0, role_keys/0]).
 
+-type cipher() :: aes_128_gcm | aes_256_gcm | chacha20_poly1305.
 -type role() :: client | server.
--type role_keys() :: #{client := map(), server := map()}.
+-type packet_keys() :: #{
+    key := binary(), iv := <<_:96>>, hp := binary(), hp_ctx => crypto:crypto_state()
+}.
+-type role_keys() :: #{client := packet_keys(), server := packet_keys()}.
+-type key_map() :: #{
+    nquic_packet:space() => role_keys(),
+    rtt0 => #{client := packet_keys()}
+}.
 
 -define(INITIAL_SALT_V1,
     <<16#38, 16#76, 16#2c, 16#f7, 16#f5, 16#59, 16#34, 16#b3, 16#4d, 16#17, 16#9a, 16#e6, 16#a4,
@@ -56,17 +64,17 @@ QUIC version. RFC 9001 uses the `"quic key/iv/hp"` HKDF labels; RFC 9369
 substitutes `"quicv2 key/iv/hp"` for QUIC v2 (0x6b3343cf).
 """.
 -spec derive_packet_protection(
-    binary(), aes_128_gcm | aes_256_gcm | chacha20_poly1305, non_neg_integer()
-) -> {Key :: binary(), IV :: binary(), HP :: binary()}.
+    binary(), cipher(), non_neg_integer()
+) -> {Key :: binary(), IV :: <<_:96>>, HP :: binary()}.
 derive_packet_protection(Secret, Cipher, Version) ->
-    {KeyLen, IVLen, HPLen} =
+    {KeyLen, HPLen} =
         case Cipher of
-            aes_128_gcm -> {16, 12, 16};
-            aes_256_gcm -> {32, 12, 32};
-            chacha20_poly1305 -> {32, 12, 32}
+            aes_128_gcm -> {16, 16};
+            aes_256_gcm -> {32, 32};
+            chacha20_poly1305 -> {32, 32}
         end,
     Key = qhkdf_expand(Secret, quic_label(Version, <<" key">>), <<>>, KeyLen),
-    IV = qhkdf_expand(Secret, quic_label(Version, <<" iv">>), <<>>, IVLen),
+    <<_:96>> = IV = qhkdf_expand(Secret, quic_label(Version, <<" iv">>), <<>>, 12),
     HP = qhkdf_expand(Secret, quic_label(Version, <<" hp">>), <<>>, HPLen),
     {Key, IV, HP}.
 
@@ -153,11 +161,11 @@ avoids per-packet EVP_CIPHER_CTX creation in the mask/unmask hot path.
 ChaCha20 omits hp_ctx since its IV changes per packet.
 """.
 -spec make_role_keys(
-    aes_128_gcm | aes_256_gcm | chacha20_poly1305,
+    cipher(),
     binary(),
-    binary(),
+    <<_:96>>,
     binary()
-) -> #{key := binary(), iv := binary(), hp := binary()}.
+) -> packet_keys().
 make_role_keys(chacha20_poly1305, Key, IV, HP) ->
     #{key => Key, iv => IV, hp => HP};
 make_role_keys(Cipher, Key, IV, HP) ->
@@ -168,7 +176,7 @@ make_role_keys(Cipher, Key, IV, HP) ->
 %%%-----------------------------------------------------------------------------
 -define(DEFAULT_CID_LEN, 8).
 -doc "Map a TLS cipher suite to its HKDF hash algorithm.".
--spec cipher_to_hash(aes_128_gcm | aes_256_gcm | chacha20_poly1305) -> sha256 | sha384.
+-spec cipher_to_hash(cipher()) -> sha256 | sha384.
 cipher_to_hash(aes_128_gcm) -> sha256;
 cipher_to_hash(aes_256_gcm) -> sha384;
 cipher_to_hash(chacha20_poly1305) -> sha256.

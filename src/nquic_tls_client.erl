@@ -198,7 +198,7 @@ the default cipher suites.
     nquic_transport:params(),
     [binary()] | undefined,
     string() | binary() | undefined,
-    #{psk := binary(), ticket := map(), cipher := atom()}
+    #{psk := binary(), ticket := map(), cipher := nquic_keys:cipher()}
 ) ->
     {ok, binary(), map()} | {error, term()}.
 make_client_hello_psk(TransportParams, ALPNProtos, Hostname, PSKInfo) ->
@@ -216,7 +216,7 @@ the default of all three RFC 8446 TLS 1.3 suites.
     nquic_transport:params(),
     [binary()] | undefined,
     string() | binary() | undefined,
-    #{psk := binary(), ticket := map(), cipher := atom()},
+    #{psk := binary(), ticket := map(), cipher := nquic_keys:cipher()},
     [aes_128_gcm | aes_256_gcm | chacha20_poly1305] | undefined
 ) ->
     {ok, binary(), map()} | {error, term()}.
@@ -665,6 +665,8 @@ server_hello_key_share(<<Group:16, _KLen:16, K/binary>>) ->
 
 -spec split_finished([binary()]) ->
     {ok, {[binary()], binary()}} | {error, nquic_error:any_reason()}.
+split_finished([]) ->
+    {error, finished_not_found};
 split_finished(Messages) ->
     case lists:last(Messages) of
         <<20:8, _/binary>> = Fin ->

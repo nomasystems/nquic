@@ -157,7 +157,7 @@ park(From, StreamID, RemainingBin, IsFin, Timeout, Data) ->
     Data#conn_state{streams_state = SS1}.
 
 -spec wake_loop(
-    [tuple()], #conn_state{}, [tuple()], [gen_statem:action()]
+    [t()], #conn_state{}, [t()], [gen_statem:action()]
 ) -> {#conn_state{}, [gen_statem:action()]}.
 wake_loop([], Data, RemAcc, ReplyAcc) ->
     SS = Data#conn_state.streams_state,

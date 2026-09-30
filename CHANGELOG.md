@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.2] - 2026-08-12
+## [Unreleased]
+
+### Fixed
+
+- Return `{error, finished_not_found}` for an empty TLS handshake flight instead of a crash reason
+- Ignore a `path_validation` timeout when the connection has no path state, instead of crashing the owner
+- Drop Retry packets explicitly after the handshake
+- Include `flowinfo` and `scope_id` in IPv6 sockaddr maps, as `socket:sockaddr_in6()` requires
+- Correct type specs flagged by set-theoretic type checking, including the missing `aes_256_gcm` in `nquic_crypto`
+
+## [1.0.3] - 2026-08-12
 
 ### Added
 

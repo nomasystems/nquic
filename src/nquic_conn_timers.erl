@@ -33,8 +33,9 @@ path skips `process_datagram`, which is where these timers are
 normally set). Subsequent PTO or `process_datagram` calls replace
 these actions idempotently.
 """.
--spec ensure_handshake_timers(gen_statem:event_handler_result(dynamic())) ->
-    gen_statem:event_handler_result(dynamic()).
+-spec ensure_handshake_timers(
+    gen_statem:event_handler_result(nquic_conn_statem:state_name(), #conn_state{})
+) -> gen_statem:event_handler_result(nquic_conn_statem:state_name(), #conn_state{}).
 ensure_handshake_timers({keep_state, Data, Actions}) ->
     {keep_state, Data, Actions ++ set_pto_timer(Data) ++ set_idle_timer(Data)};
 ensure_handshake_timers({keep_state, Data}) ->

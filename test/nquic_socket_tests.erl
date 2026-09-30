@@ -29,7 +29,16 @@ make_sockaddr_ipv4_test() ->
 
 make_sockaddr_ipv6_test() ->
     Addr = nquic_socket:make_sockaddr({0, 0, 0, 0, 0, 0, 0, 1}, 4433),
-    ?assertEqual(#{family => inet6, addr => {0, 0, 0, 0, 0, 0, 0, 1}, port => 4433}, Addr).
+    ?assertEqual(
+        #{
+            family => inet6,
+            addr => {0, 0, 0, 0, 0, 0, 0, 1},
+            port => 4433,
+            flowinfo => 0,
+            scope_id => 0
+        },
+        Addr
+    ).
 
 sockaddr_to_tuple_test() ->
     SockAddr = #{family => inet, addr => {192, 168, 1, 1}, port => 8080},

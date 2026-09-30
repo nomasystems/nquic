@@ -852,7 +852,7 @@ ensure_initial_keys(_, State) ->
     {ok, State}.
 
 -spec get_packet_len(nquic_packet:header(), non_neg_integer()) -> {ok, non_neg_integer()}.
-get_packet_len(#long_header{payload_len = Len}, _) -> {ok, Len};
+get_packet_len(#long_header{payload_len = Len}, _) when is_integer(Len) -> {ok, Len};
 get_packet_len(#short_header{}, RestLen) -> {ok, RestLen}.
 
 -spec maybe_update_dcid(nquic_packet:header(), nquic_protocol:state()) -> nquic_protocol:state().

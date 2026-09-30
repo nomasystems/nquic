@@ -28,7 +28,7 @@ constant_time_equal(_, _) ->
 
 -doc "Decrypt a QUIC packet payload with AEAD. Returns plaintext or `{error, decrypt_failed}`.".
 -spec decrypt(
-    aes_128_gcm | chacha20_poly1305, binary(), binary(), nquic_packet_number:t(), binary(), binary()
+    nquic_keys:cipher(), binary(), <<_:96>>, nquic_packet_number:t(), binary(), binary()
 ) ->
     binary() | {error, term()}.
 decrypt(Cipher, Key, IV, PN, AAD, CiphertextAndTag) ->
@@ -43,7 +43,7 @@ decrypt(Cipher, Key, IV, PN, AAD, CiphertextAndTag) ->
 
 -doc "Encrypt a QUIC packet payload with AEAD.".
 -spec encrypt(
-    aes_128_gcm | chacha20_poly1305, binary(), binary(), nquic_packet_number:t(), iodata(), iodata()
+    nquic_keys:cipher(), binary(), <<_:96>>, nquic_packet_number:t(), iodata(), iodata()
 ) ->
     {binary(), binary()}.
 encrypt(Cipher, Key, IV, PN, AAD, Plaintext) ->

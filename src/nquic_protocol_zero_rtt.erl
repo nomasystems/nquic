@@ -15,9 +15,7 @@ entry points except the early-secret input.
     install_zero_rtt_keys_psk/4
 ]).
 
--type cipher() :: aes_128_gcm | aes_256_gcm | chacha20_poly1305.
-
--spec install(binary(), cipher(), nquic_protocol:state()) -> nquic_protocol:state().
+-spec install(binary(), nquic_keys:cipher(), nquic_protocol:state()) -> nquic_protocol:state().
 install(EarlySecret, Cipher, State) ->
     Version = State#conn_state.version,
     {Key, IV, HP} = nquic_keys:derive_packet_protection(EarlySecret, Cipher, Version),
@@ -27,7 +25,7 @@ install(EarlySecret, Cipher, State) ->
     State#conn_state{crypto = Crypto0#conn_crypto{keys = NewKeys}}.
 
 -doc "Install 0-RTT keys derived from the ClientHello hash and cipher.".
--spec install_zero_rtt_keys(binary(), cipher(), nquic_protocol:state()) ->
+-spec install_zero_rtt_keys(binary(), nquic_keys:cipher(), nquic_protocol:state()) ->
     nquic_protocol:state().
 install_zero_rtt_keys(ClientHelloHash, Cipher, State) ->
     Hash = nquic_keys:cipher_to_hash(Cipher),
@@ -35,7 +33,7 @@ install_zero_rtt_keys(ClientHelloHash, Cipher, State) ->
     install(EarlySecret, Cipher, State).
 
 -doc "Install 0-RTT keys with a pre-shared key from session resumption.".
--spec install_zero_rtt_keys_psk(binary(), binary(), cipher(), nquic_protocol:state()) ->
+-spec install_zero_rtt_keys_psk(binary(), binary(), nquic_keys:cipher(), nquic_protocol:state()) ->
     nquic_protocol:state().
 install_zero_rtt_keys_psk(PSK, ClientHelloHash, Cipher, State) ->
     Hash = nquic_keys:cipher_to_hash(Cipher),

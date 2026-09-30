@@ -23,20 +23,12 @@ build_initial_frames(CryptoData) ->
     [#crypto{offset = 0, data = CryptoData}].
 
 -doc "Derive initial encryption keys from DCID per RFC 9001.".
--spec derive_initial_keys(nquic:connection_id()) ->
-    #{
-        client := #{key := binary(), iv := binary(), hp := binary()},
-        server := #{key := binary(), iv := binary(), hp := binary()}
-    }.
+-spec derive_initial_keys(nquic:connection_id()) -> nquic_keys:role_keys().
 derive_initial_keys(DCID) ->
     derive_initial_keys(DCID, 1).
 
 -doc "Derive initial encryption keys from DCID for a specific QUIC version.".
--spec derive_initial_keys(nquic:connection_id(), non_neg_integer()) ->
-    #{
-        client := #{key := binary(), iv := binary(), hp := binary()},
-        server := #{key := binary(), iv := binary(), hp := binary()}
-    }.
+-spec derive_initial_keys(nquic:connection_id(), non_neg_integer()) -> nquic_keys:role_keys().
 derive_initial_keys(DCID, Version) ->
     {ClientSecret, ServerSecret} = nquic_keys:initial_secrets(DCID, Version),
     {CKey, CIV, CHP} = nquic_keys:derive_packet_protection(ClientSecret, aes_128_gcm, Version),
@@ -48,11 +40,7 @@ derive_initial_keys(DCID, Version) ->
     }.
 
 -doc "Convert TLS key material to packet protection format.".
--spec format_keys(map()) ->
-    #{
-        client := #{key := binary(), iv := binary(), hp := binary()},
-        server := #{key := binary(), iv := binary(), hp := binary()}
-    }.
+-spec format_keys(map()) -> nquic_keys:role_keys().
 format_keys(Keys) ->
     #{
         client => #{
@@ -68,11 +56,7 @@ format_keys(Keys) ->
     }.
 
 -doc "Convert TLS key material to packet protection format with cached HP context.".
--spec format_keys(map(), aes_128_gcm | aes_256_gcm | chacha20_poly1305) ->
-    #{
-        client := #{key := binary(), iv := binary(), hp := binary()},
-        server := #{key := binary(), iv := binary(), hp := binary()}
-    }.
+-spec format_keys(map(), nquic_keys:cipher()) -> nquic_keys:role_keys().
 format_keys(Keys, Cipher) ->
     CK = maps:get(client_key, Keys),
     CIV = maps:get(client_iv, Keys),
@@ -86,25 +70,13 @@ format_keys(Keys, Cipher) ->
     }.
 
 -doc "Format and install application keys from TLS-derived secrets.".
--spec install_app_keys(map(), map()) ->
-    #{
-        application := #{
-            client := #{key := binary(), iv := binary(), hp := binary()},
-            server := #{key := binary(), iv := binary(), hp := binary()}
-        }
-    }.
+-spec install_app_keys(map(), nquic_keys:key_map()) -> nquic_keys:key_map().
 install_app_keys(Keys, ExistingKeys) ->
     FormattedKeys = format_keys(Keys),
     ExistingKeys#{application => FormattedKeys}.
 
 -doc "Format and install handshake keys from TLS-derived secrets.".
--spec install_handshake_keys(map(), map()) ->
-    #{
-        handshake := #{
-            client := #{key := binary(), iv := binary(), hp := binary()},
-            server := #{key := binary(), iv := binary(), hp := binary()}
-        }
-    }.
+-spec install_handshake_keys(map(), nquic_keys:key_map()) -> nquic_keys:key_map().
 install_handshake_keys(Keys, ExistingKeys) ->
     FormattedKeys = format_keys(Keys),
     ExistingKeys#{handshake => FormattedKeys}.

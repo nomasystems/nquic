@@ -189,7 +189,7 @@ send_initial_packet(Socket, Peer, DCID, SCID, Keys, {PN, Frames}, Version) ->
 -spec send_long_packet(
     nquic_socket:t(),
     nquic_socket:sockaddr(),
-    #long_header{},
+    #long_header{type :: initial | handshake},
     iodata(),
     #{key := binary(), iv := binary(), hp := binary()}
 ) -> {ok, iodata(), non_neg_integer()} | {error, term()}.

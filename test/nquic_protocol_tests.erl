@@ -733,6 +733,10 @@ handle_timeout_path_validation_not_validating_test() ->
     State = #conn_state{path = #conn_path_mgmt{path_state = PS}},
     {ok, [], State, []} = nquic_protocol:handle_timeout(path_validation, State).
 
+handle_timeout_path_validation_no_path_state_test() ->
+    State = #conn_state{path = #conn_path_mgmt{path_state = undefined}},
+    ?assertEqual({ok, [], State, []}, nquic_protocol:handle_timeout(path_validation, State)).
+
 is_stream_terminal_bidi_both_done_test() ->
     Stream = #stream_state{
         stream_id = 0, type = bidi, send_state = data_sent, recv_state = data_read
