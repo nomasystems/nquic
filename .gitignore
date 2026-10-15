@@ -42,6 +42,8 @@ logs
 # Project-local fixtures regenerated on demand
 test/conf/server.pem
 test/conf/server.key
+test/conf/server_rsa.pem
+test/conf/server_rsa.key
 test/interop/www/large.bin
 test/interop/www/medium.bin
 priv/scripts/h3spec
