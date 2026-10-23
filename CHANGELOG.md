@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `ip` and `ipv6_v6only` listen options: the local address of every receiver socket. An IPv6 address such as `{0,0,0,0,0,0,0,0}` with `ipv6_v6only => false` serves IPv6 and IPv4 peers on one port
+
 ## [1.1.0] - 2026-09-30
 
 ### Fixed

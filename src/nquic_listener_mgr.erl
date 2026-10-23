@@ -171,7 +171,7 @@ handle_info(_Info, State) ->
 init(#{dispatch := Dispatch, opts := Opts}) ->
     nquic_dispatch:set_mgr(Dispatch, self()),
     StaticKey = crypto:strong_rand_bytes(32),
-    case resolve_port(maps:get(port, Opts, 4433)) of
+    case resolve_port(maps:get(port, Opts, 4433), Opts) of
         {ok, Port} ->
             MaxQ = maps:get(max_accept_queue, Opts, 0),
             {ok, #state{
@@ -185,10 +185,10 @@ init(#{dispatch := Dispatch, opts := Opts}) ->
             {stop, {port_resolve_failed, Reason}}
     end.
 
--spec resolve_port(inet:port_number()) ->
+-spec resolve_port(inet:port_number(), map()) ->
     {ok, inet:port_number()} | {error, term()}.
-resolve_port(0) ->
-    case nquic_socket:open(0, #{reuseport => true}) of
+resolve_port(0, Opts) ->
+    case nquic_socket:open(0, (nquic_recv:bind_options(Opts))#{reuseport => true}) of
         {ok, Probe} ->
             Result =
                 case nquic_socket:port(Probe) of
@@ -200,7 +200,7 @@ resolve_port(0) ->
         {error, _} = Err ->
             Err
     end;
-resolve_port(P) when is_integer(P), P > 0 ->
+resolve_port(P, _Opts) when is_integer(P), P > 0 ->
     {ok, P}.
 
 -spec terminate(term(), #state{}) -> ok.
