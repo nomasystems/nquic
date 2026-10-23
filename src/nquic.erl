@@ -394,6 +394,10 @@ Options for `listen/2`. Endpoint TLS credentials live in the
 required `tls` submap; transport and congestion-control tuning in
 the optional `transport` / `cc` submaps. Remaining keys are
 listener-level policy.
+
+`ip` is the local address of every receiver socket. Default `{0,0,0,0}`.
+An IPv6 address opens IPv6 sockets. `ipv6_v6only => false` on `::`
+also accepts IPv4 peers, which appear as IPv4-mapped IPv6 addresses.
 """.
 -type listen_opts() :: #{
     tls := tls_opts(),
@@ -401,6 +405,8 @@ listener-level policy.
     cc => cc_opts(),
     qlog => nquic_qlog:backend_config(),
     receivers => pos_integer(),
+    ip => inet:ip_address(),
+    ipv6_v6only => boolean(),
     idle_timeout => timeout(),
     max_new_conns_per_sec => non_neg_integer(),
     max_accept_queue => non_neg_integer(),
