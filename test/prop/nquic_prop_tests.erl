@@ -43,6 +43,9 @@ bytes_in_flight_invariant_prop_test_() ->
 ack_eliciting_counter_prop_test_() ->
     {timeout, 60, ?_assert(triq:check(triq:numtests(200, prop_ack_eliciting_counter())))}.
 
+handshake_probe_crypto_cover_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(500, prop_handshake_probe_crypto_cover())))}.
+
 bytes_in_flight_invariant_bulk_prop_test_() ->
     {timeout, 120,
         ?_assert(triq:check(triq:numtests(30, prop_bytes_in_flight_invariant_bulk())))}.
@@ -470,3 +473,54 @@ transport_params_equal(P1, P2) ->
     P1#transport_params.max_ack_delay =:= P2#transport_params.max_ack_delay andalso
     P1#transport_params.disable_active_migration =:= P2#transport_params.disable_active_migration andalso
     P1#transport_params.active_connection_id_limit =:= P2#transport_params.active_connection_id_limit.
+
+crypto_fragments() ->
+    ?LET(
+        Flight,
+        ?SUCHTHAT(B, binary(), byte_size(B) > 0),
+        ?LET(
+            Ranges,
+            non_empty(list({int(0, byte_size(Flight) - 1), int(1, byte_size(Flight))})),
+            {Flight, [
+                {Off, min(Len, byte_size(Flight) - Off)}
+             || {Off, Len} <- Ranges
+            ]}
+        )
+    ).
+
+prop_handshake_probe_crypto_cover() ->
+    ?FORALL({Flight, Fragments}, crypto_fragments(),
+        begin
+            LS = lists:foldl(
+                fun({PN, {Off, Len}}, Acc) ->
+                    Frame = #crypto{offset = Off, data = binary:part(Flight, Off, Len)},
+                    nquic_loss:on_packet_sent(Acc, handshake, PN, [Frame], 0, 100)
+                end,
+                nquic_loss:init(),
+                lists:zip(lists:seq(0, length(Fragments) - 1), Fragments)
+            ),
+            State0 = #conn_state{
+                role = server,
+                crypto = #conn_crypto{keys = #{}},
+                loss_state = LS,
+                flow = #conn_flow{}
+            },
+            State1 = nquic_protocol_send:queue_handshake_probes(handshake, State0),
+            Probes = lists:reverse((State1#conn_state.flow)#conn_flow.pending_handshake_frames),
+            Covered = lists:usort(
+                lists:append([lists:seq(Off, Off + Len - 1) || {Off, Len} <- Fragments])
+            ),
+            ProbeBytes = lists:append(
+                [lists:seq(O, O + byte_size(D) - 1) || #crypto{offset = O, data = D} <- Probes]
+            ),
+            Ends = [{O, O + byte_size(D)} || #crypto{offset = O, data = D} <- Probes],
+            ProbeBytes =:= Covered andalso
+                lists:all(
+                    fun(#crypto{offset = O, data = D}) -> D =:= binary:part(Flight, O, byte_size(D)) end,
+                    Probes
+                ) andalso
+                lists:all(
+                    fun({{_, End}, {Next, _}}) -> End < Next end,
+                    lists:zip(lists:droplast(Ends), tl(Ends))
+                )
+        end).

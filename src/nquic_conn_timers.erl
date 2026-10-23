@@ -10,7 +10,6 @@ initial / handshake states (the established state delegates PTO to
 """.
 
 -include("nquic_conn.hrl").
--include("nquic_frame.hrl").
 -include("nquic_transport.hrl").
 -export([
     ensure_handshake_timers/1,
@@ -47,35 +46,16 @@ ensure_handshake_timers({stop, _, _} = Stop) ->
 
 -doc """
 Handle a PTO firing in the initial / handshake states.
-Queues a PING probe at the relevant encryption level, flushes, and
-restarts the PTO timer. The established state delegates PTO to
-`nquic_protocol:handle_timeout/2` instead.
+Queues the probes of `nquic_protocol_send:queue_handshake_probes/2`,
+flushes, and restarts the PTO timer. The established state delegates
+PTO to `nquic_protocol:handle_timeout/2` instead.
 """.
 -spec handle_pto(initial | handshake, #conn_state{}) ->
     gen_statem:event_handler_result(term()).
 handle_pto(StateName, Data) ->
-    LossState0 = Data#conn_state.loss_state,
-    LossState1 = nquic_loss:on_pto(LossState0),
-    Data1 = Data#conn_state{loss_state = LossState1},
-    PingFrame = #ping{},
-    Data2 =
-        case StateName of
-            initial ->
-                Keys = (Data1#conn_state.crypto)#conn_crypto.keys,
-                case maps:is_key(initial, Keys) of
-                    true ->
-                        {ok, D} = nquic_protocol_send_queues:queue_initial_frame(PingFrame, Data1),
-                        D;
-                    false ->
-                        Data1
-                end;
-            handshake ->
-                {ok, D} = nquic_protocol_send_queues:queue_handshake_frame(PingFrame, Data1),
-                D
-        end,
-    {Data3, _Timers} = nquic_conn_statem:flush_and_send(Data2),
-    Actions = set_pto_timer(Data3),
-    {keep_state, Data3, Actions}.
+    Data1 = nquic_protocol_send:queue_handshake_probes(StateName, Data),
+    {Data2, _Timers} = nquic_conn_statem:flush_and_send(Data1),
+    {keep_state, Data2, set_pto_timer(Data2)}.
 
 -doc """
 Convert a user-facing `idle_timeout` option to the transport-parameter
@@ -104,19 +84,15 @@ set_idle_timer(#conn_state{local_params = LocalParams, remote_params = RemotePar
     end.
 
 -doc """
-Compute the gen_statem `pto_timeout` action for the current state.
-When no ack-eliciting packet is in flight, returns a PTO cancellation.
+Compute the gen_statem `pto_timeout` action for the current state: an
+absolute timeout at `nquic_protocol_timer:pto_deadline_ms/1`, or a PTO
+cancellation.
 """.
 -spec set_pto_timer(#conn_state{}) -> [gen_statem:action()].
-set_pto_timer(#conn_state{loss_state = LossState, remote_params = RemoteParams}) ->
-    case nquic_loss:has_ack_eliciting_in_flight(LossState) of
-        true ->
-            MaxAckDelayUs = remote_max_ack_delay_us(RemoteParams),
-            PtoUs = nquic_loss:get_pto_timeout(LossState, MaxAckDelayUs),
-            PtoMs = max(1, (PtoUs + 999) div 1000),
-            [{{timeout, pto_timeout}, PtoMs, pto_fire}];
-        false ->
-            [{{timeout, pto_timeout}, infinity, undefined}]
+set_pto_timer(Data) ->
+    case nquic_protocol_timer:pto_deadline_ms(Data) of
+        cancel -> [{{timeout, pto_timeout}, infinity, undefined}];
+        DeadlineMs -> [{{timeout, pto_timeout}, DeadlineMs, pto_fire, [{abs, true}]}]
     end.
 
 -doc """
@@ -134,12 +110,6 @@ timer_actions_to_statem(Actions) ->
 %%%-----------------------------------------------------------------------------
 %% INTERNAL
 %%%-----------------------------------------------------------------------------
--spec remote_max_ack_delay_us(#transport_params{} | undefined) -> non_neg_integer().
-remote_max_ack_delay_us(undefined) ->
-    0;
-remote_max_ack_delay_us(#transport_params{max_ack_delay = MAD}) ->
-    MAD * 1000.
-
 -spec timer_actions_to_statem([nquic_protocol:timeout_action()], [gen_statem:action()]) ->
     [gen_statem:action()].
 timer_actions_to_statem([], Acc) ->

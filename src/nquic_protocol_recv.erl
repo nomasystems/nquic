@@ -721,7 +721,10 @@ handle_ack_frame(
     {ok, NewLossState, AckedFrames, LostFrames} = nquic_loss:on_ack_received(
         LossState, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs
     ),
-    NewLossState2 = nquic_loss:process_ecn_counts(NewLossState, Space, ECNCounts),
+    NewLossState1 = keep_client_initial_backoff(
+        State#conn_state.role, Space, LossState, NewLossState
+    ),
+    NewLossState2 = nquic_loss:process_ecn_counts(NewLossState1, Space, ECNCounts),
     InFlightAfter = nquic_loss:get_bytes_in_flight(NewLossState2),
     State1 = State#conn_state{loss_state = NewLossState2},
     State1a = nquic_protocol_ack:apply_received_ranges_prune(Space, AckedFrames, State1),
@@ -732,6 +735,15 @@ handle_ack_frame(
             {ok, WritableEvents, State3};
         false ->
             {ok, [], State2}
+    end.
+
+-spec keep_client_initial_backoff(
+    client | server, nquic_packet:space(), nquic_loss:loss_state(), nquic_loss:loss_state()
+) -> nquic_loss:loss_state().
+keep_client_initial_backoff(Role, Space, Before, After) ->
+    case Role =:= client andalso Space =:= initial of
+        true -> nquic_loss:set_pto_count(After, nquic_loss:get_pto_count(Before));
+        false -> After
     end.
 
 -spec handle_cid_frame(nquic_frame:t(), nquic_protocol:state()) ->
