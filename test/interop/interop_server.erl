@@ -61,6 +61,15 @@ apply_testcase_opts(_Other, Opts) ->
 
 -spec find_certs() -> {string(), string()}.
 find_certs() ->
+    case {os:getenv("NQUIC_CERTFILE"), os:getenv("NQUIC_KEYFILE")} of
+        {CertFile, KeyFile} when is_list(CertFile), is_list(KeyFile) ->
+            {CertFile, KeyFile};
+        _ ->
+            find_mounted_certs()
+    end.
+
+-spec find_mounted_certs() -> {string(), string()}.
+find_mounted_certs() ->
     CertsDir = "/certs",
     CertFile = filename:join(CertsDir, "cert.pem"),
     KeyFile = filename:join(CertsDir, "priv.key"),
