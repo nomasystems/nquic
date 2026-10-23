@@ -565,6 +565,62 @@ handshake_timeout_handshake_pto_queues_ping_test() ->
     ),
     ?assertEqual([], (State1#conn_state.flow)#conn_flow.pending_initial_frames).
 
+handshake_timeout_state_in_flight(Sent) ->
+    State = handshake_timeout_state(),
+    LossState = lists:foldl(
+        fun({Space, PN, Frames}, LS) ->
+            nquic_loss:on_packet_sent(LS, Space, PN, Frames, 0, 100)
+        end,
+        State#conn_state.loss_state,
+        Sent
+    ),
+    State#conn_state{loss_state = LossState}.
+
+pending_frames(#conn_state{flow = Flow}) ->
+    {
+        lists:reverse(Flow#conn_flow.pending_initial_frames),
+        lists:reverse(Flow#conn_flow.pending_handshake_frames)
+    }.
+
+handshake_pto_resends_crypto_of_every_space_test() ->
+    Ack = #ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0},
+    State = handshake_timeout_state_in_flight([
+        {initial, 0, [#crypto{offset = 0, data = <<"server-hello">>}, Ack]},
+        {handshake, 0, [#crypto{offset = 0, data = <<"flight">>}]}
+    ]),
+    {ok, [], State1, _} = nquic_protocol:handle_handshake_timeout(handshake, pto, State),
+    ?assertEqual(
+        {[#crypto{offset = 0, data = <<"server-hello">>}], [
+            #crypto{offset = 0, data = <<"flight">>}
+        ]},
+        pending_frames(State1)
+    ),
+    ?assertEqual(1, nquic_loss:get_pto_count(State1#conn_state.loss_state)).
+
+handshake_pto_merges_crypto_by_offset_test() ->
+    State = handshake_timeout_state_in_flight([
+        {handshake, 0, [#crypto{offset = 0, data = <<"abcd">>}]},
+        {handshake, 1, [#crypto{offset = 2, data = <<"cdef">>}]},
+        {handshake, 2, [#crypto{offset = 0, data = <<"ab">>}]},
+        {handshake, 3, [#crypto{offset = 10, data = <<"kl">>}]}
+    ]),
+    {ok, [], State1, _} = nquic_protocol:handle_handshake_timeout(handshake, pto, State),
+    ?assertEqual(
+        {[], [#crypto{offset = 0, data = <<"abcdef">>}, #crypto{offset = 10, data = <<"kl">>}]},
+        pending_frames(State1)
+    ).
+
+handshake_pto_pings_space_without_crypto_test() ->
+    State = handshake_timeout_state_in_flight([{initial, 0, [#ping{}]}]),
+    {ok, [], State1, _} = nquic_protocol:handle_handshake_timeout(handshake, pto, State),
+    ?assertEqual({[#ping{}], []}, pending_frames(State1)).
+
+handshake_pto_without_flight_prefers_handshake_keys_test() ->
+    State0 = handshake_timeout_state(),
+    State = State0#conn_state{crypto = #conn_crypto{keys = #{handshake => #{}}}},
+    {ok, [], State1, _} = nquic_protocol:handle_handshake_timeout(initial, pto, State),
+    ?assertEqual({[], [#ping{}]}, pending_frames(State1)).
+
 retire_peer_cids_none_test() ->
     PeerCids = #{0 => #{cid => <<1>>, token => <<>>}, 3 => #{cid => <<2>>, token => <<>>}},
     {Retired, Remaining} = nquic_protocol_cid:retire_peer_cids(0, PeerCids),

@@ -395,12 +395,13 @@ timeout(Ctx, Type) ->
 %%%-----------------------------------------------------------------------------
 -doc """
 Handle a `{quic_timeout, Type}` expiration during the server handshake.
-`Phase` is the encryption level the owner is currently driving
-(`initial` until it observes `{state_transition, handshake}`, then
-`handshake`). On a PTO this sends the probe at that level; the
-established `timeout/2` (which probes 1-RTT) is wrong before the
-connection is established. Switch to `timeout/2` once `connected` is
-observed.
+`Phase` is the encryption level that the owner drives: `initial` until
+it observes `{state_transition, handshake}`, then `handshake`. On a PTO
+the probes go to every handshake space with packets in flight, as
+`nquic_protocol:handle_handshake_timeout/3` describes. `Phase` selects
+the probe level only when nothing is in flight. Switch to `timeout/2`
+when `connected` is observed. The established `timeout/2` probes at the
+1-RTT level only.
 """.
 -spec handshake_timeout(nquic:ctx(), initial | handshake, nquic_protocol:timer_type()) ->
     {ok, [nquic_protocol:event()], nquic:ctx()} | {error, term(), nquic:ctx()}.

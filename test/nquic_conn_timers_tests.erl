@@ -57,9 +57,53 @@ set_pto_timer_with_remote_max_ack_delay_test() ->
         loss_state = LossState1,
         remote_params = #transport_params{max_ack_delay = 25}
     },
-    [{{timeout, pto_timeout}, PtoMs, pto_fire}] =
-        nquic_conn_timers:set_pto_timer(Data),
-    ?assert(PtoMs >= 1).
+    PtoMs = (nquic_loss:get_pto_timeout(LossState1, 25_000) + 999) div 1000,
+    ?assertEqual(
+        [{{timeout, pto_timeout}, PtoMs, pto_fire, [{abs, true}]}],
+        nquic_conn_timers:set_pto_timer(Data)
+    ).
+
+set_pto_timer_deadline_follows_last_send_test() ->
+    SentUs = erlang:monotonic_time(microsecond) - 400_000,
+    LossState = nquic_loss:on_packet_sent(nquic_loss:init(), initial, 0, [#ping{}], SentUs, 1200),
+    Data = #conn_state{role = server, loss_state = LossState, remote_params = undefined},
+    PtoMs = (nquic_loss:get_pto_timeout(LossState, 0) + 999) div 1000,
+    Expected = [
+        {
+            {timeout, pto_timeout},
+            erlang:convert_time_unit(SentUs, microsecond, millisecond) + PtoMs,
+            pto_fire,
+            [{abs, true}]
+        }
+    ],
+    ?assertEqual(Expected, nquic_conn_timers:set_pto_timer(Data)),
+    ?assertEqual(Expected, nquic_conn_timers:set_pto_timer(Data)).
+
+client_handshake_data(Crypto, LossState) ->
+    #conn_state{role = client, crypto = Crypto, loss_state = LossState, remote_params = undefined}.
+
+set_pto_timer_client_without_handshake_ack_stays_armed_test() ->
+    Data = client_handshake_data(#conn_crypto{keys = #{initial => #{}}}, nquic_loss:init()),
+    ?assertMatch(
+        [{{timeout, pto_timeout}, _, pto_fire, [{abs, true}]}],
+        nquic_conn_timers:set_pto_timer(Data)
+    ).
+
+set_pto_timer_client_with_handshake_ack_cancels_test() ->
+    LS0 = nquic_loss:on_packet_sent(nquic_loss:init(), handshake, 0, [#ping{}], 0, 100),
+    {ok, LS1, _, _} = nquic_loss:on_ack_received(LS0, handshake, [{0, 0}], 0, 1000, 0),
+    Data = client_handshake_data(#conn_crypto{keys = #{handshake => #{}}}, LS1),
+    ?assertEqual(
+        [{{timeout, pto_timeout}, infinity, undefined}],
+        nquic_conn_timers:set_pto_timer(Data)
+    ).
+
+set_pto_timer_client_confirmed_cancels_test() ->
+    Data = client_handshake_data(#conn_crypto{keys = #{}}, nquic_loss:init()),
+    ?assertEqual(
+        [{{timeout, pto_timeout}, infinity, undefined}],
+        nquic_conn_timers:set_pto_timer(Data)
+    ).
 
 timer_actions_to_statem_empty_test() ->
     ?assertEqual([], nquic_conn_timers:timer_actions_to_statem([])).

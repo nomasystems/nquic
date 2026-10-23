@@ -20,12 +20,14 @@ controller's window collapses to `2 * max_datagram_size`.
 -export([
     detect_loss/3,
 
+    get_ack_eliciting_frames/2,
     get_ack_eliciting_in_flight/1,
     get_bytes_in_flight/1,
     get_cc_algorithm/1,
     get_cwnd/1,
     get_largest_acked/2,
     get_loss_timer/1,
+    get_pto_base_time/1,
     get_pto_count/1,
     get_pto_timeout/2,
     get_rtt_stats/1,
@@ -33,12 +35,14 @@ controller's window collapses to `2 * max_datagram_size`.
     get_sent_packets/1,
 
     has_ack_eliciting_in_flight/1,
+    has_received_ack/2,
     init/0,
     init/1,
     on_ack_received/6,
     on_packet_sent/6,
     on_pto/1,
-    reset_pto_count/1
+    reset_pto_count/1,
+    set_pto_count/2
 ]).
 -export([set_max_datagram_size/2]).
 -export([clear_handshake_spaces/1, clear_initial_space/1]).
@@ -266,6 +270,16 @@ find_largest_pkt([#sent_packet{packet_number = PN} = P | Rest], _Best, BestPN) w
 find_largest_pkt([_ | Rest], Best, BestPN) ->
     find_largest_pkt(Rest, Best, BestPN).
 
+-doc "Get the frames of the ack-eliciting packets in flight in `Space`, in packet number order.".
+-spec get_ack_eliciting_frames(loss_state(), nquic_packet:space()) -> [nquic_frame:t()].
+get_ack_eliciting_frames(#loss_state{sent_packets = AllSent}, Space) ->
+    [
+        Frame
+     || #sent_packet{ack_eliciting = true, in_flight = true, frames = Frames} <-
+            nquic_pn_buf:values(maps:get(Space, AllSent)),
+        Frame <- Frames
+    ].
+
 -doc "Get the cached count of ack-eliciting packets currently in flight.".
 -spec get_ack_eliciting_in_flight(loss_state()) -> non_neg_integer().
 get_ack_eliciting_in_flight(#loss_state{ack_eliciting_in_flight = N}) ->
@@ -301,6 +315,21 @@ get_loss_timer(#loss_state{loss_time = LossTimes}) ->
     T2 = maps:get(handshake, LossTimes, undefined),
     T3 = maps:get(application, LossTimes, undefined),
     min_time(T1, min_time(T2, T3)).
+
+-doc """
+Get the base time of the PTO timer (RFC 9002 Appendix A.8), or `undefined`
+when no ack-eliciting packet is in flight. For each space with
+ack-eliciting packets in flight, the candidate is the send time of the
+newest such packet. The base time is the earliest candidate.
+""".
+-spec get_pto_base_time(loss_state()) -> non_neg_integer() | undefined.
+get_pto_base_time(#loss_state{
+    sent_packets = #{initial := Initial, handshake := Handshake, application := App}
+}) ->
+    min_time(
+        newest_ack_eliciting_time(Initial),
+        min_time(newest_ack_eliciting_time(Handshake), newest_ack_eliciting_time(App))
+    ).
 
 -doc "Get the current PTO count.".
 -spec get_pto_count(loss_state()) -> non_neg_integer().
@@ -352,6 +381,11 @@ get_sent_packets(#loss_state{sent_packets = AllSent}) ->
 -spec has_ack_eliciting_in_flight(loss_state()) -> boolean().
 has_ack_eliciting_in_flight(#loss_state{ack_eliciting_in_flight = N}) ->
     N > 0.
+
+-doc "Return true once an ACK acknowledged a packet sent in `Space`.".
+-spec has_received_ack(loss_state(), nquic_packet:space()) -> boolean().
+has_received_ack(#loss_state{largest_acked_packet = AllLargest}, Space) ->
+    maps:is_key(Space, AllLargest).
 
 -doc "Initialize loss detection state with default RTT and NewReno congestion control.".
 -spec init() -> loss_state().
@@ -456,6 +490,18 @@ max_acked_from_ranges([{_, High} | Rest]) ->
 min_time(undefined, T) -> T;
 min_time(T, undefined) -> T;
 min_time(A, B) -> min(A, B).
+
+-spec newest_ack_eliciting_time(nquic_pn_buf:buf()) -> non_neg_integer() | undefined.
+newest_ack_eliciting_time(SpaceSent) ->
+    newest_ack_eliciting_time_desc(lists:reverse(nquic_pn_buf:values(SpaceSent))).
+
+-spec newest_ack_eliciting_time_desc([sent_packet()]) -> non_neg_integer() | undefined.
+newest_ack_eliciting_time_desc([]) ->
+    undefined;
+newest_ack_eliciting_time_desc([#sent_packet{ack_eliciting = true, in_flight = true} = P | _]) ->
+    P#sent_packet.time_sent;
+newest_ack_eliciting_time_desc([_ | Rest]) ->
+    newest_ack_eliciting_time_desc(Rest).
 
 -doc """
 Process an ACK frame, returning updated state plus acked and lost frames.
@@ -926,6 +972,11 @@ path_stats(#loss_state{} = S) ->
 -spec reset_pto_count(loss_state()) -> loss_state().
 reset_pto_count(State) ->
     State#loss_state{pto_count = 0}.
+
+-doc "Set the PTO count, the exponent of the PTO backoff.".
+-spec set_pto_count(loss_state(), non_neg_integer()) -> loss_state().
+set_pto_count(State, Count) ->
+    State#loss_state{pto_count = Count}.
 
 -doc "Enable or disable ECN for this connection.".
 -spec set_ecn_enabled(loss_state(), boolean()) -> loss_state().

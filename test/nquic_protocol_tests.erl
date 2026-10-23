@@ -1894,3 +1894,32 @@ close_established_uses_app_space_test() ->
     ?assertMatch([#connection_close{}], Flow#conn_flow.pending_app_frames),
     ?assertEqual([], Flow#conn_flow.pending_initial_frames),
     ?assertEqual([], Flow#conn_flow.pending_handshake_frames).
+
+initial_ack_state(Role) ->
+    LS0 = nquic_loss:on_packet_sent(nquic_loss:init(), initial, 0, [#ping{}], 0, 1200),
+    #conn_state{
+        role = Role,
+        loss_state = nquic_loss:on_pto(nquic_loss:on_pto(LS0)),
+        streams_state = #conn_streams{streams = #{}},
+        flow = #conn_flow{}
+    }.
+
+initial_ack_pto_count(Role) ->
+    Ack = #ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0},
+    Header = #long_header{type = initial, dcid = <<>>, scid = <<>>, packet_number = 0},
+    {ok, _, State} = nquic_protocol_recv:handle_frame(Ack, Header, initial_ack_state(Role)),
+    nquic_loss:get_pto_count(State#conn_state.loss_state).
+
+client_keeps_pto_backoff_on_initial_ack_test() ->
+    ?assertEqual(2, initial_ack_pto_count(client)).
+
+server_resets_pto_backoff_on_initial_ack_test() ->
+    ?assertEqual(0, initial_ack_pto_count(server)).
+
+flush_of_ack_only_packet_leaves_pto_test() ->
+    State0 = (make_handshake_send_state(1472))#conn_state{streams_state = #conn_streams{}},
+    {ok, State1} = nquic_protocol_send_queues:queue_handshake_frame(#ping{}, State0),
+    {ok, [_], State2, [{set_timer, pto, _}]} = nquic_protocol:flush(State1),
+    Ack = #ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0},
+    {ok, State3} = nquic_protocol_send_queues:queue_handshake_frame(Ack, State2),
+    ?assertMatch({ok, [_], _, []}, nquic_protocol:flush(State3)).

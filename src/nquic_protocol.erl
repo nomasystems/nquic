@@ -264,16 +264,26 @@ do_flush(State0) ->
     case nquic_protocol_send_queues:flush_app(State2) of
         {ok, AppPkts, State3} ->
             Packets = InitPkts ++ HsPkts ++ AppPkts,
-            TimerActions = nquic_protocol_timer:compute_pto_timer_actions(State3),
-            {ok, Packets, State3, TimerActions};
+            {PtoActions, State4} = flush_pto_actions(State0, State3),
+            {ok, Packets, State4, PtoActions};
         {ok, State3} ->
             case InitPkts ++ HsPkts of
                 [] ->
                     {ok, State3};
                 Packets ->
-                    TimerActions = nquic_protocol_timer:compute_pto_timer_actions(State3),
-                    {ok, Packets, State3, TimerActions}
+                    {PtoActions, State4} = flush_pto_actions(State0, State3),
+                    {ok, Packets, State4, PtoActions}
             end
+    end.
+
+-spec flush_pto_actions(state(), state()) -> {[timeout_action()], state()}.
+flush_pto_actions(#conn_state{loss_state = Before}, #conn_state{loss_state = After} = State) ->
+    case
+        nquic_loss:get_ack_eliciting_in_flight(After) >
+            nquic_loss:get_ack_eliciting_in_flight(Before)
+    of
+        true -> nquic_protocol_timer:arm_pto_timer(State);
+        false -> {[], State}
     end.
 
 -spec emit_stream_inline(
@@ -342,6 +352,9 @@ Encrypt all queued frames into QUIC packets and return them.
 Returns `{ok, [iodata()], State, [timeout_action()]}` with packets
 and timer actions when there are frames to send, or `{ok, State}`
 if there is nothing to flush.
+The timer actions restart the PTO only when the flush sent an
+ack-eliciting packet (RFC 9002 §6.2). A flush of ACK-only packets
+leaves the PTO timer as it is.
 The packets are produced in encryption-level order: Initial first,
 then Handshake, then 1-RTT (application). Each is a separate datagram;
 there is no in-datagram coalescing today, so the wrapper sends each
@@ -371,16 +384,16 @@ flush(State0) ->
     end.
 
 -doc """
-Handle a timer expiration during the server handshake (`initial` /
-`handshake` packet number spaces, before the connection is
-established).
-The established `handle_timeout/2` queues a 1-RTT PING on PTO, which is
-useless before app keys exist and never retransmits the handshake
-flight. This variant sends the PTO probe at the encryption level the
-owner is currently driving (`Phase`), mirroring
-`nquic_conn_timers:handle_pto/2`. The owner tracks `Phase` from the
-`{state_transition, handshake}` event and switches to the established
-`timeout/2` once it observes `connected`.
+Handle a timer expiration before the connection is established.
+
+On a PTO the probes go to every space in `[initial, handshake]` with
+ack-eliciting packets in flight, and resend the CRYPTO data of those
+packets (`nquic_protocol_send:queue_handshake_probes/2`).
+`Phase` is the encryption level that the owner drives. It selects the
+probe level only when nothing is in flight and no Handshake keys exist.
+The owner tracks `Phase` from the `{state_transition, handshake}` event
+and switches to the established `handle_timeout/2` when it observes
+`connected`.
 """.
 -spec handle_handshake_timeout(initial | handshake, timer_type(), state()) ->
     {ok, [event()], state(), [timeout_action()]}
@@ -388,14 +401,8 @@ owner is currently driving (`Phase`), mirroring
 handle_handshake_timeout(_Phase, idle, State) ->
     {error, {transport_error, idle_timeout}, State};
 handle_handshake_timeout(Phase, pto, State) ->
-    LossState1 = nquic_loss:on_pto(State#conn_state.loss_state),
-    State1 = State#conn_state{loss_state = LossState1},
-    {ok, State2} =
-        case Phase of
-            initial -> nquic_protocol_send_queues:queue_initial_frame(#ping{}, State1);
-            handshake -> nquic_protocol_send_queues:queue_handshake_frame(#ping{}, State1)
-        end,
-    TimerActions = nquic_protocol_timer:compute_pto_timer_actions(State2),
+    State1 = nquic_protocol_send:queue_handshake_probes(Phase, State),
+    {TimerActions, State2} = nquic_protocol_timer:arm_pto_timer(State1),
     {ok, [], State2, TimerActions};
 handle_handshake_timeout(_Phase, Type, State) ->
     handle_timeout(Type, State).

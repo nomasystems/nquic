@@ -56,7 +56,7 @@ builders module-qualified; the dependency is one-way.
     hp_sample/3
 ]).
 
--export([handle_lost_frames/3]).
+-export([handle_lost_frames/3, queue_handshake_probes/2]).
 
 -export([
     take_frames_for_mtu_pre/2
@@ -992,6 +992,86 @@ handle_lost_frames([], _Space, State) ->
 handle_lost_frames([Frame | Rest], Space, State) ->
     State1 = retransmit_frame(Frame, Space, State),
     handle_lost_frames(Rest, Space, State1).
+
+-spec fallback_probe_space(initial | handshake, nquic_keys:key_map()) -> initial | handshake.
+fallback_probe_space(Phase, Keys) ->
+    case maps:is_key(handshake, Keys) of
+        true -> handshake;
+        false -> Phase
+    end.
+
+-spec merge_crypto_frames([nquic_frame:t()]) -> [#crypto{}].
+merge_crypto_frames(Frames) ->
+    merge_sorted_crypto(lists:keysort(#crypto.offset, [F || #crypto{} = F <- Frames]), []).
+
+-spec merge_sorted_crypto([#crypto{}], [#crypto{}]) -> [#crypto{}].
+merge_sorted_crypto([], Acc) ->
+    lists:reverse(Acc);
+merge_sorted_crypto(
+    [#crypto{offset = Off, data = Data} | Rest],
+    [#crypto{offset = PrevOff, data = PrevData} | _] = Acc
+) when Off + byte_size(Data) =< PrevOff + byte_size(PrevData) ->
+    merge_sorted_crypto(Rest, Acc);
+merge_sorted_crypto(
+    [#crypto{offset = Off, data = Data} | Rest],
+    [#crypto{offset = PrevOff, data = PrevData} = Prev | Acc]
+) when Off =< PrevOff + byte_size(PrevData) ->
+    Overlap = PrevOff + byte_size(PrevData) - Off,
+    <<_:Overlap/binary, Tail/binary>> = Data,
+    merge_sorted_crypto(Rest, [Prev#crypto{data = <<PrevData/binary, Tail/binary>>} | Acc]);
+merge_sorted_crypto([Frame | Rest], Acc) ->
+    merge_sorted_crypto(Rest, [Frame | Acc]).
+
+-doc """
+Count a handshake PTO and queue its probes (RFC 9002 §6.2.4).
+
+Each of the Initial and Handshake spaces with ack-eliciting packets in
+flight gets one probe. The probe carries the CRYPTO data of those
+packets, merged by offset, or a PING when they carry no CRYPTO data.
+When neither space has packets in flight, the PTO is the client
+anti-deadlock PTO of RFC 9002 §6.2.2.1. One PING then goes out at the
+Handshake level if Handshake keys exist, else at the `Phase` level.
+""".
+-spec queue_handshake_probes(initial | handshake, nquic_protocol:state()) ->
+    nquic_protocol:state().
+queue_handshake_probes(
+    Phase, #conn_state{loss_state = LS0, crypto = #conn_crypto{keys = Keys}} = State
+) ->
+    LS = nquic_loss:on_pto(LS0),
+    State1 = State#conn_state{loss_state = LS},
+    case
+        {
+            nquic_loss:get_ack_eliciting_frames(LS, initial),
+            nquic_loss:get_ack_eliciting_frames(LS, handshake)
+        }
+    of
+        {[], []} ->
+            queue_probe_frames(fallback_probe_space(Phase, Keys), [#ping{}], State1);
+        {InitialFrames, HandshakeFrames} ->
+            State2 = queue_space_probe(initial, InitialFrames, State1),
+            queue_space_probe(handshake, HandshakeFrames, State2)
+    end.
+
+-spec queue_probe_frames(initial | handshake, [nquic_frame:t()], nquic_protocol:state()) ->
+    nquic_protocol:state().
+queue_probe_frames(_Space, [], State) ->
+    State;
+queue_probe_frames(initial, [Frame | Rest], State) ->
+    {ok, State1} = nquic_protocol_send_queues:queue_initial_frame(Frame, State),
+    queue_probe_frames(initial, Rest, State1);
+queue_probe_frames(handshake, [Frame | Rest], State) ->
+    {ok, State1} = nquic_protocol_send_queues:queue_handshake_frame(Frame, State),
+    queue_probe_frames(handshake, Rest, State1).
+
+-spec queue_space_probe(initial | handshake, [nquic_frame:t()], nquic_protocol:state()) ->
+    nquic_protocol:state().
+queue_space_probe(_Space, [], State) ->
+    State;
+queue_space_probe(Space, Frames, State) ->
+    case merge_crypto_frames(Frames) of
+        [] -> queue_probe_frames(Space, [#ping{}], State);
+        Crypto -> queue_probe_frames(Space, Crypto, State)
+    end.
 
 -spec retransmit_data_blocked(non_neg_integer(), nquic_protocol:state()) -> nquic_protocol:state().
 retransmit_data_blocked(Limit, State) ->
