@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `ip` and `ipv6_v6only` listen options: the local address of every receiver socket. An IPv6 address such as `{0,0,0,0,0,0,0,0}` with `ipv6_v6only => false` serves IPv6 and IPv4 peers on one port
+
+### Fixed
+
+- Complete the handshake after the loss of the server Initial. The handshake PTO probes every packet number space with packets in flight and resends their CRYPTO data, on the `nquic:accept` and the `conn_handler` server paths (RFC 9002 §6.2.4)
+- Keep the client PTO armed until a Handshake packet is acknowledged or the handshake is confirmed, and keep the client PTO backoff on Initial ACKs (RFC 9002 §6.2.1, §6.2.2.1)
+- Restart the PTO only when an ack-eliciting packet is sent. Received datagrams and ACK-only flushes no longer push the PTO out (RFC 9002 §6.2, Appendix A.8)
+
 ## [1.1.0] - 2026-09-30
 
 ### Fixed

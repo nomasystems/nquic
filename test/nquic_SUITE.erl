@@ -19,6 +19,7 @@
 all() ->
     [
         api_connect_listen_test,
+        listen_dual_stack_test,
         export_protocol_test,
         v2_connect_test,
         session_resumption_test,
@@ -46,6 +47,15 @@ api_connect_listen_test(_Config) ->
     {ok, Drv} = nquic_ctx_driver:connect("localhost", Port, ConnectOpts),
     true = is_process_alive(Drv),
     ok = nquic_ctx_driver:close(Drv),
+    ok = nquic:stop_listener(Listener),
+    ok.
+
+listen_dual_stack_test(_Config) ->
+    {Listener, Port} = start_listener(#{
+        ip => {0, 0, 0, 0, 0, 0, 0, 0}, ipv6_v6only => false, receivers => 2
+    }),
+    ok = client_handshake({0, 0, 0, 0, 0, 0, 0, 1}, Port),
+    ok = client_handshake({127, 0, 0, 1}, Port),
     ok = nquic:stop_listener(Listener),
     ok.
 
@@ -223,8 +233,11 @@ run_client_terminate_closes_socket(Baseline) ->
 %%%-----------------------------------------------------------------------------
 
 start_listener() ->
+    start_listener(#{}).
+
+start_listener(Extra) ->
     ConfDir = conf_dir(),
-    ListenOpts = #{
+    ListenOpts = Extra#{
         tls => #{
             certfile => filename:join(ConfDir, "server.pem"),
             keyfile => filename:join(ConfDir, "server.key"),
@@ -304,6 +317,27 @@ fd_count() ->
             length(filelib:wildcard("/proc/self/fd/*"));
         false ->
             unsupported
+    end.
+
+client_handshake(IP, Port) ->
+    {ok, Sock} = nquic_socket:open(#{ip => IP}),
+    {ok, CPid} = nquic_conn_statem:start_link(#{
+        role => client,
+        socket => Sock,
+        peer => nquic_socket:make_sockaddr(IP, Port),
+        dcid => nquic_keys:generate_connection_id(8),
+        hostname => "localhost",
+        alpn => [<<"h3">>],
+        verify => verify_none,
+        owner => self()
+    }),
+    ok = nquic_socket:controlling_process(Sock, CPid),
+    receive
+        {nquic_conn_export, CPid, {ok, _, ExportedSock, _}} ->
+            _ = nquic_socket:close(ExportedSock),
+            ok
+    after 5000 ->
+        ct:fail({handshake_timeout, IP})
     end.
 
 conf_dir() ->

@@ -87,12 +87,15 @@ init(Opts) ->
     ECN = maps:get(ecn, Opts, false),
     GSO = maps:get(gso, Opts, false),
     GRO = maps:get(gro, Opts, false),
-    SockOpts = nquic_recv:socket_options(RecvOpts#{
-        reuseport => ReusePort,
-        ecn => ECN,
-        gso => GSO,
-        gro => GRO
-    }),
+    SockOpts = maps:merge(
+        nquic_recv:socket_options(RecvOpts#{
+            reuseport => ReusePort,
+            ecn => ECN,
+            gso => GSO,
+            gro => GRO
+        }),
+        nquic_recv:bind_options(Opts)
+    ),
     case nquic_socket:open(Port, SockOpts) of
         {ok, Socket} ->
             MaxRate = maps:get(max_new_conns_per_sec, Opts, 0),

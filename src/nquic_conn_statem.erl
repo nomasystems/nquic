@@ -447,10 +447,10 @@ flush_pending_result({stop_and_reply, _, _, _} = Result) ->
     Result;
 flush_pending_result({keep_state, Data, Actions}) ->
     {Data1, _Timers} = flush_and_send(Data),
-    {keep_state, Data1, Actions};
+    {keep_state, Data1, Actions ++ nquic_conn_timers:set_pto_timer(Data1)};
 flush_pending_result({next_state, State, Data, Actions}) ->
     {Data1, _Timers} = flush_and_send(Data),
-    {next_state, State, Data1, Actions}.
+    {next_state, State, Data1, Actions ++ nquic_conn_timers:set_pto_timer(Data1)}.
 
 -spec handle_client_recv(state_name(), #conn_state{}) ->
     gen_statem:event_handler_result(state_name()).

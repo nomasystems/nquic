@@ -19,10 +19,29 @@ idle bound is resolved via `nquic_protocol:get_idle_timeout/2`.
 -include("nquic_conn.hrl").
 -include("nquic_transport.hrl").
 -export([
+    arm_pto_timer/1,
     compute_path_validation_timeout/1,
     compute_pto_timer_actions/1,
-    compute_timer_actions/1
+    compute_timer_actions/1,
+    pto_deadline_ms/1
 ]).
+
+-doc """
+Compute the PTO timer action unconditionally, and record it in the PTO
+cache that `compute_timer_actions/1` reads. Use it after a send of an
+ack-eliciting packet or after a PTO, where the timer restarts even when
+its period did not change.
+""".
+-spec arm_pto_timer(nquic_protocol:state()) ->
+    {[nquic_protocol:timeout_action()], nquic_protocol:state()}.
+arm_pto_timer(#conn_state{loss_state = LS, remote_params = RP} = State) ->
+    case is_pto_armed(State) of
+        true ->
+            PtoMs = compute_pto_ms(LS, RP),
+            {[{set_timer, pto, PtoMs}], State#conn_state{last_pto_ms = PtoMs}};
+        false ->
+            {[{cancel_timer, pto}], State#conn_state{last_pto_ms = cancel}}
+    end.
 
 -spec compute_ack_delay_timer_acc(nquic_protocol:state(), [nquic_protocol:timeout_action()]) ->
     [nquic_protocol:timeout_action()].
@@ -97,8 +116,8 @@ compute_pto_ms(LS, RP) ->
     max(1, (PtoUs + 999) div 1000).
 
 -spec compute_pto_timer_actions(nquic_protocol:state()) -> [nquic_protocol:timeout_action()].
-compute_pto_timer_actions(#conn_state{loss_state = LS, remote_params = RP}) ->
-    case nquic_loss:has_ack_eliciting_in_flight(LS) of
+compute_pto_timer_actions(#conn_state{loss_state = LS, remote_params = RP} = State) ->
+    case is_pto_armed(State) of
         true ->
             PtoMs = compute_pto_ms(LS, RP),
             [{set_timer, pto, PtoMs}];
@@ -111,7 +130,7 @@ compute_pto_timer_actions(#conn_state{loss_state = LS, remote_params = RP}) ->
 compute_pto_timer_cached(
     #conn_state{loss_state = LS, remote_params = RP, last_pto_ms = Cached} = State, Acc
 ) ->
-    case nquic_loss:has_ack_eliciting_in_flight(LS) of
+    case is_pto_armed(State) of
         true ->
             PtoMs = compute_pto_ms(LS, RP),
             case Cached of
@@ -124,6 +143,20 @@ compute_pto_timer_cached(
                 _ -> {[{cancel_timer, pto} | Acc], State#conn_state{last_pto_ms = cancel}}
             end
     end.
+
+-spec is_client_awaiting_handshake_ack(nquic_protocol:state()) -> boolean().
+is_client_awaiting_handshake_ack(#conn_state{role = Role, loss_state = LS, crypto = Crypto}) ->
+    Role =:= client andalso
+        not nquic_loss:has_received_ack(LS, handshake) andalso
+        not is_handshake_confirmed(Crypto).
+
+-spec is_handshake_confirmed(#conn_crypto{}) -> boolean().
+is_handshake_confirmed(#conn_crypto{keys = Keys}) ->
+    not maps:is_key(initial, Keys) andalso not maps:is_key(handshake, Keys).
+
+-spec is_pto_armed(nquic_protocol:state()) -> boolean().
+is_pto_armed(#conn_state{loss_state = LS} = State) ->
+    nquic_loss:has_ack_eliciting_in_flight(LS) orelse is_client_awaiting_handshake_ack(State).
 
 -doc """
 Compute timer actions based on current state.
@@ -141,3 +174,26 @@ compute_timer_actions(State) ->
     {Acc3, State1} = compute_pto_timer_cached(State, Acc2),
     {Acc4, State2} = compute_idle_timer_cached(State1, Acc3),
     {Acc4, State2}.
+
+-doc """
+Get the PTO deadline in `erlang:monotonic_time(millisecond)` units, or
+`cancel` when the PTO timer must not run.
+
+The deadline is one PTO period after `nquic_loss:get_pto_base_time/1`
+(RFC 9002 Appendix A.8). A recompute that sees no new ack-eliciting
+packet gives the same deadline, so received datagrams do not push the
+timer out. With nothing in flight, which is the client anti-deadlock
+PTO, the deadline is one PTO period after now.
+""".
+-spec pto_deadline_ms(nquic_protocol:state()) -> integer() | cancel.
+pto_deadline_ms(#conn_state{loss_state = LS, remote_params = RP} = State) ->
+    case is_pto_armed(State) of
+        true -> pto_base_ms(nquic_loss:get_pto_base_time(LS)) + compute_pto_ms(LS, RP);
+        false -> cancel
+    end.
+
+-spec pto_base_ms(integer() | undefined) -> integer().
+pto_base_ms(undefined) ->
+    erlang:monotonic_time(millisecond);
+pto_base_ms(BaseUs) ->
+    erlang:convert_time_unit(BaseUs, microsecond, millisecond).
