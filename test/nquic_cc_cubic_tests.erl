@@ -357,6 +357,23 @@ set_max_datagram_size_idempotent_test() ->
     S2 = nquic_cc_cubic:set_max_datagram_size(S1, 1500),
     ?assertEqual(1500, nquic_cc_cubic:get_max_datagram_size(S2)).
 
+set_max_datagram_size_ends_epoch_test() ->
+    S0 = nquic_cc_cubic:init(),
+    S1 = nquic_cc_cubic:on_congestion_event(S0, 1200, 12000, 0),
+    S2 = ack(S1, 1, 50_000),
+    ?assertNotEqual(0, S2#state.epoch_start),
+    S3 = nquic_cc_cubic:on_congestion_event(
+        S2, 1200, 12000, erlang:monotonic_time(microsecond) + 1_000
+    ),
+    ?assertNotEqual(0, element(6, S3#state.prev_state)),
+    S4 = nquic_cc_cubic:set_max_datagram_size(S3, 1452),
+    ?assertMatch(#state{epoch_start = 0, cubic_k = undefined}, S4),
+    ?assertMatch({_, _, _, _, _, 0, 0, 0, undefined, _}, S4#state.prev_state),
+    S5 = nquic_cc_cubic:on_spurious_congestion(S4),
+    ?assertMatch(#state{epoch_start = 0, cubic_k = undefined}, S5),
+    S6 = ack(S5, 2, 50_000),
+    ?assert(is_float(S6#state.cubic_k)).
+
 cbrt_and_cubic_window_test() ->
     ?assert(abs(nquic_cc_cubic:cbrt(27.0) - 3.0) < 0.001),
     ?assert(abs(nquic_cc_cubic:cbrt(0.0)) < 0.001),

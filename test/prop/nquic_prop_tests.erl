@@ -57,6 +57,9 @@ ack_eliciting_counter_bulk_prop_test_() ->
 pto_monotonic_prop_test_() ->
     {timeout, 60, ?_assert(triq:check(triq:numtests(200, prop_pto_monotonic())))}.
 
+cubic_ack_after_any_events_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(1000, prop_cubic_ack_after_any_events())))}.
+
 
 varint() ->
     ?LET(Bits, int(0, 62),
@@ -523,4 +526,50 @@ prop_handshake_probe_crypto_cover() ->
                     fun({{_, End}, {Next, _}}) -> End < Next end,
                     lists:zip(lists:droplast(Ends), tl(Ends))
                 )
+        end).
+
+cc_event() ->
+    oneof([
+        {sent, int(1, 65527)},
+        {acked, int(1, 65527), int(1, 500_000)},
+        {lost, oneof([fresh, stale])},
+        {mss, int(1200, 65527)},
+        spurious,
+        persistent,
+        idle
+    ]).
+
+apply_cc_event({sent, Size}, {CC, PN}) ->
+    {nquic_cc:on_packet_sent(CC, Size, 0), PN};
+apply_cc_event({acked, Size, Rtt}, {CC, PN}) ->
+    Packet = #sent_packet{
+        packet_number = PN,
+        time_sent = erlang:monotonic_time(microsecond) + 1,
+        size = Size,
+        ack_eliciting = true,
+        in_flight = true,
+        frames = []
+    },
+    RTTStats = #{smoothed_rtt => Rtt, latest_rtt => Rtt, min_rtt => Rtt, rttvar => Rtt div 2},
+    {nquic_cc:on_packet_acked(CC, Packet, 0, RTTStats), PN + 1};
+apply_cc_event({lost, fresh}, {CC, PN}) ->
+    {nquic_cc:on_congestion_event(CC, 1200, 0, erlang:monotonic_time(microsecond) + 1), PN};
+apply_cc_event({lost, stale}, {CC, PN}) ->
+    {nquic_cc:on_congestion_event(CC, 1200, 0, 0), PN};
+apply_cc_event({mss, Size}, {CC, PN}) ->
+    {nquic_cc:set_max_datagram_size(CC, Size), PN};
+apply_cc_event(spurious, {CC, PN}) ->
+    {nquic_cc:on_spurious_congestion(CC), PN};
+apply_cc_event(persistent, {CC, PN}) ->
+    {nquic_cc:on_persistent_congestion(CC), PN};
+apply_cc_event(idle, {CC, PN}) ->
+    {nquic_cc:on_idle_reset(CC), PN}.
+
+prop_cubic_ack_after_any_events() ->
+    ?FORALL({SlowStart, Events}, {oneof([standard, hystart_plus_plus]), list(cc_event())},
+        begin
+            Init = {nquic_cc:new(cubic, #{slow_start => SlowStart}), 0},
+            Final = lists:foldl(fun apply_cc_event/2, Init, Events ++ [{acked, 1200, 25_000}]),
+            {CC, _} = Final,
+            is_integer(nquic_cc:get_cwnd(CC))
         end).

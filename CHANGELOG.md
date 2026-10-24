@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Complete the handshake after the loss of the server Initial. The handshake PTO probes every packet number space with packets in flight and resends their CRYPTO data, on the `nquic:accept` and the `conn_handler` server paths (RFC 9002 §6.2.4)
 - Keep the client PTO armed until a Handshake packet is acknowledged or the handshake is confirmed, and keep the client PTO backoff on Initial ACKs (RFC 9002 §6.2.1, §6.2.2.1)
 - Restart the PTO only when an ack-eliciting packet is sent. Received datagrams and ACK-only flushes no longer push the PTO out (RFC 9002 §6.2, Appendix A.8)
+- Keep the CUBIC state consistent when the maximum datagram size changes. An ACK in congestion avoidance after a size change no longer crashes the owner with `badarith`
 
 ## [1.1.0] - 2026-09-30
 

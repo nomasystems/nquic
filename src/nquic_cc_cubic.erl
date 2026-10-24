@@ -29,6 +29,19 @@ TCP-friendly region (Section 4.2) where W_est tracks standard TCP growth.
 -export([cbrt/1, cubic_window/3]).
 -export([hystart_phase/1]).
 
+-type snapshot() :: {
+    non_neg_integer(),
+    non_neg_integer(),
+    integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    undefined | float(),
+    boolean()
+}.
+
 -define(C, 0.4).
 -define(BETA_CUBIC, 0.7).
 -define(ALPHA_CUBIC, (3.0 * (1.0 - ?BETA_CUBIC) / (1.0 + ?BETA_CUBIC))).
@@ -55,20 +68,7 @@ TCP-friendly region (Section 4.2) where W_est tracks standard TCP growth.
     tcp_cwnd = 0 :: non_neg_integer(),
     cubic_k = undefined :: undefined | float(),
     congestion_occurred = false :: boolean(),
-    prev_state ::
-        undefined
-        | {
-            non_neg_integer(),
-            non_neg_integer(),
-            integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            undefined | float(),
-            boolean()
-        },
+    prev_state :: undefined | snapshot(),
     hystart_phase = standard ::
         standard | slow_start | css | done,
     last_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
@@ -465,29 +465,42 @@ on_spurious_congestion(#state{prev_state = Snap} = State) ->
         prev_state = undefined
     }.
 
--doc "Set the maximum datagram size, recalculating cwnd if still at initial window.".
+-spec reset_epoch(#state{}) -> #state{}.
+reset_epoch(#state{prev_state = Snap} = State) ->
+    State#state{
+        epoch_start = 0,
+        origin_point = 0,
+        tcp_cwnd = 0,
+        cubic_k = undefined,
+        prev_state = reset_snapshot_epoch(Snap)
+    }.
+
+-spec reset_snapshot_epoch(undefined | snapshot()) -> undefined | snapshot().
+reset_snapshot_epoch(undefined) ->
+    undefined;
+reset_snapshot_epoch({Cwnd, Ssthresh, RST, WMax, WLastMax, _, _, _, _, CongOcc}) ->
+    {Cwnd, Ssthresh, RST, WMax, WLastMax, 0, 0, 0, undefined, CongOcc}.
+
+-doc """
+Set the maximum datagram size. Before the first congestion event a
+window still at the initial window follows the new size.
+
+A change of size ends the current CUBIC epoch, also in the spurious-loss
+snapshot. The next ACK in congestion avoidance starts a new epoch and
+computes K from `w_max` and the new size.
+""".
 -spec set_max_datagram_size(#state{}, pos_integer()) -> #state{}.
+set_max_datagram_size(#state{max_datagram_size = Size} = State, Size) ->
+    State;
 set_max_datagram_size(State, Size) when Size >= 1200 ->
-    #state{congestion_occurred = CongOccurred, max_datagram_size = OldMSS} = State,
-    NewCubicK =
-        case Size =:= OldMSS of
-            true -> State#state.cubic_k;
-            false -> undefined
+    #state{congestion_occurred = CongOccurred, max_datagram_size = OldMSS, cwnd = OldCwnd} =
+        State,
+    NewCwnd =
+        case not CongOccurred andalso OldCwnd =:= initial_window(OldMSS) of
+            true -> initial_window(Size);
+            false -> OldCwnd
         end,
-    case CongOccurred of
-        false ->
-            OldInitial = initial_window(OldMSS),
-            NewInitial = initial_window(Size),
-            OldCwnd = State#state.cwnd,
-            NewCwnd =
-                case OldCwnd =:= OldInitial of
-                    true -> NewInitial;
-                    false -> OldCwnd
-                end,
-            State#state{max_datagram_size = Size, cwnd = NewCwnd, cubic_k = NewCubicK};
-        true ->
-            State#state{max_datagram_size = Size, cubic_k = NewCubicK}
-    end.
+    reset_epoch(State#state{max_datagram_size = Size, cwnd = NewCwnd}).
 
 -spec slow_start_grow(#state{}, non_neg_integer()) -> #state{}.
 slow_start_grow(#state{hystart_phase = css, max_datagram_size = MSS} = State, AckedBytes) ->
