@@ -4,7 +4,8 @@ Handshake recovery after the loss of one datagram.
 
 Each case drops one of the first eight datagrams in one direction
 through `nquic_drop_proxy`, then requires the client connect to finish
-within three initial PTOs. The
+within three initial PTOs. Cases run with `echo` then send one
+bidirectional stream and require the server to echo it back. The
 `accept_server` group runs the `nquic:accept` server path, and the
 `handler_server` group runs the `conn_handler` server path.
 """.
@@ -38,6 +39,8 @@ within three initial PTOs. The
 -define(CONNECT_BUDGET_MS, 3000).
 -define(CONNECT_TIMEOUT_MS, 10000).
 -define(MAX_INDEX, 8).
+-define(ECHO_TIMEOUT_MS, 5000).
+-define(ECHO_PAYLOAD, <<"handshake-loss-echo">>).
 
 all() ->
     [{group, accept_server}, {group, handler_server}].
@@ -69,32 +72,32 @@ init_per_testcase(_Case, Config) ->
 end_per_testcase(_Case, _Config) ->
     ok.
 
-no_drop(Config) -> run([], Config).
+no_drop(Config) -> run([], echo, Config).
 
-drop_client_1(Config) -> run([{client, 1}], Config).
-drop_client_2(Config) -> run([{client, 2}], Config).
-drop_client_3(Config) -> run([{client, 3}], Config).
-drop_client_4(Config) -> run([{client, 4}], Config).
-drop_client_5(Config) -> run([{client, 5}], Config).
-drop_client_6(Config) -> run([{client, 6}], Config).
-drop_client_7(Config) -> run([{client, 7}], Config).
-drop_client_8(Config) -> run([{client, 8}], Config).
+drop_client_1(Config) -> run([{client, 1}], echo, Config).
+drop_client_2(Config) -> run([{client, 2}], connect_only, Config).
+drop_client_3(Config) -> run([{client, 3}], connect_only, Config).
+drop_client_4(Config) -> run([{client, 4}], connect_only, Config).
+drop_client_5(Config) -> run([{client, 5}], connect_only, Config).
+drop_client_6(Config) -> run([{client, 6}], connect_only, Config).
+drop_client_7(Config) -> run([{client, 7}], connect_only, Config).
+drop_client_8(Config) -> run([{client, 8}], connect_only, Config).
 
-drop_server_1(Config) -> run([{server, 1}], Config).
-drop_server_2(Config) -> run([{server, 2}], Config).
-drop_server_3(Config) -> run([{server, 3}], Config).
-drop_server_4(Config) -> run([{server, 4}], Config).
-drop_server_5(Config) -> run([{server, 5}], Config).
-drop_server_6(Config) -> run([{server, 6}], Config).
-drop_server_7(Config) -> run([{server, 7}], Config).
-drop_server_8(Config) -> run([{server, 8}], Config).
+drop_server_1(Config) -> run([{server, 1}], connect_only, Config).
+drop_server_2(Config) -> run([{server, 2}], connect_only, Config).
+drop_server_3(Config) -> run([{server, 3}], connect_only, Config).
+drop_server_4(Config) -> run([{server, 4}], connect_only, Config).
+drop_server_5(Config) -> run([{server, 5}], connect_only, Config).
+drop_server_6(Config) -> run([{server, 6}], connect_only, Config).
+drop_server_7(Config) -> run([{server, 7}], connect_only, Config).
+drop_server_8(Config) -> run([{server, 8}], connect_only, Config).
 
 %%%-------------------------------------------------------------------
 
 case_name(Dir, I) ->
     list_to_atom(lists:flatten(io_lib:format("drop_~s_~b", [Dir, I]))).
 
-run(Drops, Config) ->
+run(Drops, Echo, Config) ->
     Path = ?config(server_path, Config),
     {ok, Listener} = listen(Path),
     {ok, ServerPort} = nquic:get_port(Listener),
@@ -108,10 +111,20 @@ run(Drops, Config) ->
     ]),
     {ok, Drv} = Result,
     ?assert(ElapsedMs =< ?CONNECT_BUDGET_MS),
+    ok = echo(Echo, Drv),
     ok = nquic_ctx_driver:close(Drv),
     ok = stop_acceptor(Acceptor),
     ok = nquic_drop_proxy:stop(Proxy),
     ok = gen_server:stop(Listener).
+
+echo(connect_only, _Drv) ->
+    ok;
+echo(echo, Drv) ->
+    {ok, Sid} = nquic_ctx_driver:open_stream(Drv, #{type => bidi}),
+    ok = nquic_ctx_driver:send_fin(Drv, Sid, ?ECHO_PAYLOAD),
+    ?assertEqual(
+        {ok, ?ECHO_PAYLOAD, fin}, nquic_test_util:recv_all(Drv, Sid, ?ECHO_TIMEOUT_MS)
+    ).
 
 connect_outcome({ok, _}) -> connected;
 connect_outcome({error, _} = Error) -> Error.
@@ -154,9 +167,19 @@ stop_acceptor(Pid) ->
     end.
 
 acceptor(Listener) ->
-    {ok, _Drv} = nquic_ctx_driver:accept(Listener, #{timeout => ?CONNECT_TIMEOUT_MS}),
-    receive
-        stop -> ok
+    {ok, Drv} = nquic_ctx_driver:accept(Listener, #{timeout => ?CONNECT_TIMEOUT_MS}),
+    echo_streams(Drv).
+
+echo_streams(Drv) ->
+    case nquic_ctx_driver:accept_stream(Drv) of
+        {ok, Sid} ->
+            {ok, Data, fin} = nquic_test_util:recv_all(Drv, Sid, ?ECHO_TIMEOUT_MS),
+            ok = nquic_ctx_driver:send_fin(Drv, Sid, Data),
+            echo_streams(Drv);
+        {error, _} ->
+            receive
+                stop -> ok
+            end
     end.
 
 conf_dir() ->
