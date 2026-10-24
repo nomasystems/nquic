@@ -830,9 +830,8 @@ install_app_keys(Keys, State, Buffers) ->
                     ok ?= validate_version_info(State, RemoteParams),
                     D = State#conn_state{remote_params = RemoteParams},
                     D1 = nquic_flow:init_conn_limits(D),
-                    MaxSize = RemoteParams#transport_params.max_udp_payload_size,
                     NewLoss = nquic_loss:set_max_datagram_size(
-                        D1#conn_state.loss_state, MaxSize
+                        D1#conn_state.loss_state, nquic_protocol_send:max_datagram_size(D1)
                     ),
                     D1#conn_state{loss_state = NewLoss}
                 end
@@ -900,8 +899,9 @@ install_handshake_keys(Keys, State, Buffers) ->
             RemoteParams ->
                 D = State#conn_state{remote_params = RemoteParams},
                 D1 = nquic_flow:init_conn_limits(D),
-                MaxSize = RemoteParams#transport_params.max_udp_payload_size,
-                NewLoss = nquic_loss:set_max_datagram_size(D1#conn_state.loss_state, MaxSize),
+                NewLoss = nquic_loss:set_max_datagram_size(
+                    D1#conn_state.loss_state, nquic_protocol_send:max_datagram_size(D1)
+                ),
                 D1#conn_state{loss_state = NewLoss}
         end,
 

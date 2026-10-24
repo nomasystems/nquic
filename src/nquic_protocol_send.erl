@@ -34,6 +34,7 @@ builders module-qualified; the dependency is one-way.
     build_packets_mtu_pre_ctx/5,
     build_zero_rtt_packet_pre/3,
     make_app_send_ctx/2,
+    max_datagram_size/1,
     packet_payload_budget/1
 ]).
 
@@ -66,6 +67,7 @@ builders module-qualified; the dependency is one-way.
 
 -type pre_encoded() :: {non_neg_integer(), iodata(), nquic_frame:t()}.
 -define(AEAD_TAG_SIZE, 16).
+-define(MIN_UDP_PAYLOAD_SIZE, 1200).
 
 -record(app_send_ctx, {
     cipher :: aes_128_gcm | aes_256_gcm | chacha20_poly1305,
@@ -276,13 +278,28 @@ batch_frames([F | Rest], Budget, Used, Cur, Batches) ->
 handshake_payload_budget(#conn_state{
     dcid = DCID, scid = SCID, remote_params = RP
 }) ->
-    PeerMax =
-        case RP of
-            #transport_params{max_udp_payload_size = M} when is_integer(M), M >= 1200 -> M;
-            _ -> 1200
-        end,
+    PeerMax = peer_max_udp_payload_size(RP),
     Overhead = 1 + 4 + 1 + byte_size(DCID) + 1 + byte_size(SCID) + 2 + 4 + ?AEAD_TAG_SIZE,
     PeerMax - Overhead.
+
+-doc """
+Largest UDP payload this endpoint sends on the path:
+`min(max_payload_size, peer max_udp_payload_size)`, never below 1200
+bytes. This is the maximum datagram size of the congestion controller
+(RFC 9002 §7.2). The peer `max_udp_payload_size` is a receive limit,
+not a path MTU (RFC 9000 §18.2), so it only bounds the value.
+""".
+-spec max_datagram_size(nquic_protocol:state()) -> pos_integer().
+max_datagram_size(#conn_state{max_payload_size = Local, remote_params = RP}) ->
+    max(?MIN_UDP_PAYLOAD_SIZE, min(Local, peer_max_udp_payload_size(RP))).
+
+-spec peer_max_udp_payload_size(nquic_transport:params() | undefined) -> pos_integer().
+peer_max_udp_payload_size(#transport_params{max_udp_payload_size = M}) when
+    is_integer(M), M >= ?MIN_UDP_PAYLOAD_SIZE
+->
+    M;
+peer_max_udp_payload_size(_) ->
+    ?MIN_UDP_PAYLOAD_SIZE.
 
 -spec presplit_crypto_frames([nquic_frame:t()], pos_integer()) -> [nquic_frame:t()].
 presplit_crypto_frames(Frames, Budget) ->
