@@ -140,7 +140,7 @@ try_32byte_psk(_) ->
     binary().
 compute_psk_binder(PSK, PartialCH, Hash, HashLen) ->
     Zero = <<0:(HashLen * 8)>>,
-    EarlySecret = hkdf_extract(Hash, Zero, PSK),
+    EarlySecret = nquic_keys:hkdf_extract(Hash, Zero, PSK),
     EmptyHash = crypto:hash(Hash, <<>>),
     BinderKey = nquic_keys:qhkdf_expand(
         EarlySecret, <<"res binder">>, EmptyHash, HashLen, Hash
@@ -175,10 +175,6 @@ has_psk_dhe_ke_mode(ExtMap) ->
         _ ->
             false
     end.
-
--spec hkdf_extract(sha256 | sha384, binary(), binary()) -> binary().
-hkdf_extract(Hash, Salt, IKM) ->
-    crypto:mac(hmac, Hash, Salt, IKM).
 
 -spec parse_psk_binders(binary()) -> [binary()].
 parse_psk_binders(<<>>) ->

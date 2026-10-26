@@ -68,7 +68,7 @@ apply_param(?PARAM_STATELESS_RESET_TOKEN, Val, Acc, SenderRole) ->
 apply_param(?PARAM_MAX_UDP_PAYLOAD_SIZE, Val, Acc, _SenderRole) ->
     {ok, ValInt, _} = nquic_varint:decode(Val),
     if
-        ValInt < 1200 -> {error, transport_parameter_error};
+        ValInt < ?MIN_UDP_PAYLOAD_SIZE -> {error, transport_parameter_error};
         true -> {ok, Acc#transport_params{max_udp_payload_size = ValInt}}
     end;
 apply_param(?PARAM_INITIAL_MAX_DATA, Val, Acc, _SenderRole) ->

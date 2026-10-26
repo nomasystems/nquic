@@ -322,7 +322,7 @@ send_close_frame_at_level(Frame, Data, Level) ->
 
         {Ciphertext, Tag} = nquic_crypto:encrypt(Cipher, Key, IV, PN, HeaderBin, Payload),
         SampleOff = 4 - PnLen,
-        Sample = nquic_protocol_send:hp_sample(Ciphertext, Tag, SampleOff),
+        Sample = nquic_hp:sample(Ciphertext, Tag, SampleOff),
         Mask = nquic_hp:generate_mask_from_keys(RoleKeys, Cipher, Sample),
         IsLong = Level =/= application,
         {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, IsLong),

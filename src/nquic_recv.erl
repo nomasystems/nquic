@@ -5,10 +5,8 @@ Optimized UDP receive handling for QUIC.
 This module provides utilities for configuring socket buffers.
 """.
 
+-include("nquic_socket.hrl").
 -export([bind_options/1, socket_options/0, socket_options/1]).
-
--define(DEFAULT_RECBUF, 4 * 1024 * 1024).
--define(DEFAULT_SNDBUF, 2 * 1024 * 1024).
 
 -doc "The `ip` and `ipv6_v6only` entries of listener options, for `nquic_socket:open/2`.".
 -spec bind_options(map()) -> nquic_socket:open_opts().

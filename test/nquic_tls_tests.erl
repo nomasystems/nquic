@@ -5,10 +5,8 @@
 -module(nquic_tls_tests).
 
 -include_lib("eunit/include/eunit.hrl").
+-include("nquic_tls.hrl").
 -include("nquic_transport.hrl").
--record(server_hello_versions, {
-    versions
-}).
 
 make_client_hello_test() ->
     ssl:start(),

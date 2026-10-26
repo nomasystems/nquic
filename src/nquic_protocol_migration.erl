@@ -142,7 +142,7 @@ maybe_detect_black_hole(#conn_state{pmtud = undefined} = State) ->
 maybe_detect_black_hole(#conn_state{pmtud = PS, loss_state = LS} = State) ->
     PtoCount = nquic_loss:get_pto_count(LS),
     CurrentMTU = nquic_pmtud:get_current_mtu(PS),
-    case PtoCount >= ?BLACK_HOLE_PTO_THRESHOLD andalso CurrentMTU > 1200 of
+    case PtoCount >= ?BLACK_HOLE_PTO_THRESHOLD andalso CurrentMTU > ?MIN_UDP_PAYLOAD_SIZE of
         true -> pmtud_on_black_hole(State);
         false -> State
     end.
@@ -153,7 +153,7 @@ pmtud_on_black_hole(#conn_state{pmtud = undefined} = State) ->
     State;
 pmtud_on_black_hole(#conn_state{pmtud = PS, loss_state = LS} = State) ->
     PS1 = nquic_pmtud:on_black_hole(PS),
-    LS1 = nquic_loss:set_max_datagram_size(LS, 1200),
+    LS1 = nquic_loss:set_max_datagram_size(LS, ?MIN_UDP_PAYLOAD_SIZE),
     State#conn_state{pmtud = PS1, loss_state = LS1}.
 
 -doc """

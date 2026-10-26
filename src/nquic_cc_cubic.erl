@@ -15,6 +15,7 @@ excludes those periods (Section 4.2).
 
 -behaviour(nquic_cc).
 
+-include("nquic_cc_cubic.hrl").
 -include("nquic_loss.hrl").
 -export([
     get_cwnd/1,
@@ -33,61 +34,20 @@ excludes those periods (Section 4.2).
 -export([cbrt/1, cubic_epoch/3, cubic_window/3]).
 -export([hystart_phase/1]).
 
--type snapshot() :: {
-    non_neg_integer(),
-    non_neg_integer(),
-    integer(),
-    non_neg_integer(),
-    non_neg_integer(),
-    non_neg_integer(),
-    non_neg_integer(),
-    non_neg_integer(),
-    undefined | float(),
-    boolean()
-}.
-
 -define(C, 0.4).
 -define(BETA_CUBIC, 0.7).
 -define(ALPHA_CUBIC, (3.0 * (1.0 - ?BETA_CUBIC) / (1.0 + ?BETA_CUBIC))).
--define(INFINITY_SSTHRESH, 16#FFFFFFFFFFFFFFFF).
--define(NO_RECOVERY, -576460752303423488).
 -define(MAX_TARGET_GROWTH, 1.5).
 -define(CWND_LIMITED_SLACK_SEGMENTS, 3).
 -define(SLOW_START_LIMITED_DIVISOR, 2).
 
--define(HYSTART_RTT_SAMPLE_COUNT, 8).
+-define(HYSTART_N_RTT_SAMPLE, 8).
 -define(HYSTART_MIN_RTT_THRESH_US, 4_000).
 -define(HYSTART_MAX_RTT_THRESH_US, 16_000).
--define(HYSTART_N_RTT_SAMPLE, 8).
+-define(HYSTART_MIN_RTT_DIVISOR, 8).
 -define(HYSTART_CSS_GROWTH_DIVISOR, 4).
 -define(HYSTART_CSS_ROUNDS, 5).
 -define(HYSTART_CSS_L, 8).
-
--record(state, {
-    cwnd :: non_neg_integer(),
-    ssthresh = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    max_datagram_size = 1200 :: pos_integer(),
-    recovery_start_time = ?NO_RECOVERY :: integer(),
-    w_max = 0 :: non_neg_integer(),
-    w_last_max = 0 :: non_neg_integer(),
-    epoch_start = 0 :: non_neg_integer(),
-    origin_point = 0 :: non_neg_integer(),
-    tcp_cwnd = 0 :: non_neg_integer(),
-    cubic_k = undefined :: undefined | float(),
-    congestion_occurred = false :: boolean(),
-    prev_state :: undefined | snapshot(),
-    hystart_phase = standard ::
-        standard | slow_start | css | done,
-    last_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    current_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    rtt_sample_count = 0 :: non_neg_integer(),
-    last_round_largest_pn = 0 :: non_neg_integer(),
-    css_baseline_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    css_round_count = 0 :: non_neg_integer(),
-    undo_bytes = 0 :: non_neg_integer(),
-    app_limited_since :: integer() | undefined,
-    sent_in_flight = 0 :: non_neg_integer()
-}).
 
 -spec add_undo_bytes(#state{}, non_neg_integer()) -> #state{}.
 add_undo_bytes(#state{prev_state = undefined} = State, _LostBytes) ->
@@ -219,13 +179,13 @@ get_ssthresh(#state{ssthresh = S}) -> S.
 
 -spec hystart_evaluate(#state{}, map()) -> #state{}.
 hystart_evaluate(#state{rtt_sample_count = Count} = State, _RTTStats) when
-    Count < ?HYSTART_RTT_SAMPLE_COUNT
+    Count < ?HYSTART_N_RTT_SAMPLE
 ->
     State;
 hystart_evaluate(#state{hystart_phase = slow_start} = State, RTTStats) ->
     #state{cwnd = Cwnd, last_round_min_rtt = LastMin, current_round_min_rtt = CurMin} = State,
     MinRTT = maps:get(min_rtt, RTTStats, LastMin),
-    Thresh = clamp_rtt_thresh(MinRTT div ?HYSTART_N_RTT_SAMPLE),
+    Thresh = clamp_rtt_thresh(MinRTT div ?HYSTART_MIN_RTT_DIVISOR),
     case CurMin > LastMin + Thresh of
         true ->
             State#state{
@@ -324,7 +284,7 @@ Recognises:
 """.
 -spec init(map()) -> #state{}.
 init(Opts) ->
-    MSS = maps:get(mss, Opts, 1200),
+    MSS = maps:get(mss, Opts, ?MIN_UDP_PAYLOAD_SIZE),
     Phase =
         case maps:get(slow_start, Opts, standard) of
             standard -> standard;
@@ -332,14 +292,10 @@ init(Opts) ->
             _ -> standard
         end,
     #state{
-        cwnd = initial_window(MSS),
+        cwnd = nquic_cc_newreno:initial_window(MSS),
         max_datagram_size = MSS,
         hystart_phase = Phase
     }.
-
--spec initial_window(pos_integer()) -> non_neg_integer().
-initial_window(MSS) ->
-    erlang:floor(erlang:min(10 * MSS, erlang:max(14720, 2 * MSS))).
 
 -spec is_cwnd_limited(slow_start | congestion_avoidance, non_neg_integer(), #state{}) ->
     boolean().
@@ -431,7 +387,7 @@ are cleared.
 -spec on_idle_reset(#state{}) -> #state{}.
 on_idle_reset(#state{cwnd = Cwnd, ssthresh = Ssthresh, max_datagram_size = MSS} = State) ->
     State#state{
-        cwnd = max(Cwnd div 2, min(initial_window(MSS), Cwnd)),
+        cwnd = max(Cwnd div 2, min(nquic_cc_newreno:initial_window(MSS), Cwnd)),
         ssthresh = max(Ssthresh, (Cwnd * 3) div 4),
         recovery_start_time = ?NO_RECOVERY,
         epoch_start = 0,
@@ -598,12 +554,12 @@ computes K from `w_max` and the new size.
 -spec set_max_datagram_size(#state{}, pos_integer()) -> #state{}.
 set_max_datagram_size(#state{max_datagram_size = Size} = State, Size) ->
     State;
-set_max_datagram_size(State, Size) when Size >= 1200 ->
+set_max_datagram_size(State, Size) when Size >= ?MIN_UDP_PAYLOAD_SIZE ->
     #state{congestion_occurred = CongOccurred, max_datagram_size = OldMSS, cwnd = OldCwnd} =
         State,
     NewCwnd =
-        case not CongOccurred andalso OldCwnd =:= initial_window(OldMSS) of
-            true -> initial_window(Size);
+        case not CongOccurred andalso OldCwnd =:= nquic_cc_newreno:initial_window(OldMSS) of
+            true -> nquic_cc_newreno:initial_window(Size);
             false -> OldCwnd
         end,
     reset_epoch(State#state{max_datagram_size = Size, cwnd = NewCwnd}).

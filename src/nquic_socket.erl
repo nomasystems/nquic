@@ -23,6 +23,8 @@ handle_info({'$socket', Socket, select, _Info}, State) ->
 """.
 
 -include("nquic_frame.hrl").
+-include("nquic_socket.hrl").
+-include("nquic_transport.hrl").
 -export([open/1, open/2]).
 -export([send/3, send_connected/2]).
 -export([recv_cancel/2, recv_now/1, recv_start/1]).
@@ -57,14 +59,9 @@ handle_info({'$socket', Socket, select, _Info}, State) ->
 -type sockaddr() :: socket:sockaddr_in() | socket:sockaddr_in6().
 -type t() :: socket:socket().
 
--define(DEFAULT_RECBUF, 4 * 1024 * 1024).
--define(DEFAULT_SNDBUF, 2 * 1024 * 1024).
-
 -define(SOL_UDP, 17).
 -define(UDP_SEGMENT, 103).
 -define(UDP_GRO, 104).
-
--define(DEFAULT_GSO_SIZE, 1200).
 
 -define(CAPABILITIES_KEY, {?MODULE, capabilities}).
 
@@ -421,7 +418,7 @@ maybe_set_gro(Socket, Opts) ->
 maybe_set_gso(Socket, Opts) ->
     case maps:get(gso, Opts, false) of
         false -> ok;
-        true -> set_gso_size(Socket, ?DEFAULT_GSO_SIZE);
+        true -> set_gso_size(Socket, ?MIN_UDP_PAYLOAD_SIZE);
         Size when is_integer(Size), Size > 0 -> set_gso_size(Socket, Size);
         _ -> ok
     end.
@@ -589,7 +586,11 @@ probe_capabilities() ->
     case socket:open(inet, dgram, udp) of
         {ok, S} ->
             GSO =
-                case socket:setopt_native(S, {?SOL_UDP, ?UDP_SEGMENT}, <<1200:32/native>>) of
+                case
+                    socket:setopt_native(S, {?SOL_UDP, ?UDP_SEGMENT}, <<
+                        ?MIN_UDP_PAYLOAD_SIZE:32/native
+                    >>)
+                of
                     ok -> true;
                     _ -> false
                 end,

@@ -1,16 +1,8 @@
-%%%-------------------------------------------------------------------
-%%% EUnit tests for {@link nquic_recv}.
-%%%
-%%% Macro values mirror the production defaults defined in
-%%% `src/nquic_recv.erl'; if those defaults change, update the values
-%%% here so the regression tests stay in sync.
-%%%-------------------------------------------------------------------
 -module(nquic_recv_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(DEFAULT_RECBUF, 4 * 1024 * 1024).
--define(DEFAULT_SNDBUF, 2 * 1024 * 1024).
+-include("nquic_socket.hrl").
 
 socket_options_default_test() ->
     Opts = nquic_recv:socket_options(),

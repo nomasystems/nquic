@@ -157,7 +157,7 @@
 
     gso_size :: undefined | pos_integer(),
 
-    max_payload_size = 1200 :: pos_integer(),
+    max_payload_size = ?MIN_UDP_PAYLOAD_SIZE :: pos_integer(),
 
     server_per_conn_fd = false :: boolean(),
 

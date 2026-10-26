@@ -9,6 +9,7 @@ Currently ships with `nquic_cc_newreno`.
 """.
 
 -include("nquic_loss.hrl").
+-include("nquic_transport.hrl").
 -callback init() -> dynamic().
 -callback on_packet_sent(dynamic(), non_neg_integer(), non_neg_integer()) -> dynamic().
 -callback on_packet_acked(dynamic(), #sent_packet{}, non_neg_integer(), map()) -> dynamic().
@@ -51,7 +52,7 @@ get_cwnd({Mod, State}) ->
 get_max_datagram_size({Mod, State}) ->
     case erlang:function_exported(Mod, get_max_datagram_size, 1) of
         true -> Mod:get_max_datagram_size(State);
-        false -> 1200
+        false -> ?MIN_UDP_PAYLOAD_SIZE
     end.
 
 -doc "Get the current slow start threshold.".

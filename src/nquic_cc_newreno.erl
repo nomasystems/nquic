@@ -11,6 +11,7 @@ loss reduction factor of 0.5. Initial window follows RFC 9002 Section 7.2:
 -behaviour(nquic_cc).
 
 -include("nquic_loss.hrl").
+-include("nquic_transport.hrl").
 -export([
     get_cwnd/1,
     get_ssthresh/1,
@@ -33,7 +34,7 @@ loss reduction factor of 0.5. Initial window follows RFC 9002 Section 7.2:
     cwnd :: non_neg_integer(),
     ssthresh = 16#FFFFFFFFFFFFFFFF :: non_neg_integer(),
     recovery_start_time = -576460752303423488 :: integer(),
-    max_datagram_size = 1200 :: pos_integer(),
+    max_datagram_size = ?MIN_UDP_PAYLOAD_SIZE :: pos_integer(),
     congestion_occurred = false :: boolean(),
     prev_state ::
         undefined | {non_neg_integer(), non_neg_integer(), integer(), boolean()}
@@ -54,7 +55,7 @@ get_ssthresh(#state{ssthresh = S}) -> S.
 -doc "Initialize NewReno state with default 1200-byte MSS and computed initial window.".
 -spec init() -> #state{}.
 init() ->
-    MSS = 1200,
+    MSS = ?MIN_UDP_PAYLOAD_SIZE,
     #state{cwnd = initial_window(MSS), max_datagram_size = MSS}.
 
 -spec initial_window(pos_integer()) -> non_neg_integer().
@@ -185,7 +186,7 @@ on_spurious_congestion(#state{prev_state = {Cwnd, Ssthresh, RST, CongOcc}} = Sta
 
 -doc "Set the maximum datagram size, recalculating cwnd if still at the initial window.".
 -spec set_max_datagram_size(#state{}, pos_integer()) -> #state{}.
-set_max_datagram_size(State, Size) when Size >= 1200 ->
+set_max_datagram_size(State, Size) when Size >= ?MIN_UDP_PAYLOAD_SIZE ->
     #state{congestion_occurred = CongOccurred, max_datagram_size = OldMSS} = State,
     case CongOccurred of
         false ->

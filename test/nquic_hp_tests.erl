@@ -185,3 +185,28 @@ unmask_header_mask_ctx_test() ->
     ResultCached = nquic_hp:unmask_header_mask(CachedMask, PnOffset, Masked),
     ResultOneShot = nquic_hp:unmask_header(aes_128_gcm, HPKey, Sample, PnOffset, Masked),
     ?assertEqual(ResultOneShot, ResultCached).
+
+sample_large_ciphertext_test() ->
+    Large = crypto:strong_rand_bytes(32),
+    Tag = crypto:strong_rand_bytes(16),
+    Sample = nquic_hp:sample(Large, Tag, 0),
+    ?assertEqual(16, byte_size(Sample)),
+    <<Expected:16/binary, _/binary>> = Large,
+    ?assertEqual(Expected, Sample).
+
+sample_small_ciphertext_test() ->
+    Small = <<1, 2, 3, 4, 5>>,
+    Tag = crypto:strong_rand_bytes(16),
+    Sample = nquic_hp:sample(Small, Tag, 0),
+    ?assertEqual(16, byte_size(Sample)),
+    Combined = <<Small/binary, Tag/binary>>,
+    <<Expected:16/binary, _/binary>> = Combined,
+    ?assertEqual(Expected, Sample).
+
+sample_with_offset_test() ->
+    Ciphertext = crypto:strong_rand_bytes(32),
+    Tag = crypto:strong_rand_bytes(16),
+    Sample = nquic_hp:sample(Ciphertext, Tag, 4),
+    ?assertEqual(16, byte_size(Sample)),
+    <<_:4/binary, Expected:16/binary, _/binary>> = Ciphertext,
+    ?assertEqual(Expected, Sample).

@@ -17,7 +17,6 @@ state in this process.
 -include("nquic_frame.hrl").
 -include("nquic_packet.hrl").
 -include("nquic_path.hrl").
--include("nquic_socket.hrl").
 -export([handle_packet_event/2, start_link/1]).
 -export([
     close/3,
@@ -275,13 +274,6 @@ do_proactive_export(Data0) ->
     {Data, _Timers} = flush_and_send(Data0),
     do_export_handoff(Data).
 
--spec do_send(nquic_socket:t(), nquic_socket:sockaddr(), boolean(), iodata()) ->
-    ok | {error, nquic_error:any_reason()}.
-do_send(Socket, Peer, false, Pkt) ->
-    nquic_socket:send(Socket, Peer, Pkt);
-do_send(Socket, _Peer, true, Pkt) ->
-    nquic_socket:send_connected(Socket, Pkt).
-
 -spec flush_and_send(#conn_state{}) -> {#conn_state{}, [nquic_protocol:timeout_action()]}.
 flush_and_send(Data) ->
     case nquic_protocol:flush(Data) of
@@ -299,7 +291,7 @@ flush_and_send(Data) ->
                     true -> Data1#conn_state{loss_state = apply_ecn_dirty(Socket, LS0)}
                 end,
             nquic_conn_metrics:bytes_out(Data2, iolist_size(Packets)),
-            send_packets(Socket, Peer, GsoSize, Connected, Packets),
+            ok = nquic_lib_socket:send_packets(Socket, Peer, Connected, GsoSize, Packets),
             {Data2, TimerActions};
         {ok, Data1} ->
             {Data1, []}
@@ -311,45 +303,6 @@ schedule_deferred_flush(#conn_state{deferred_flush_pending = true} = Data) ->
 schedule_deferred_flush(Data) ->
     self() ! deferred_flush,
     Data#conn_state{deferred_flush_pending = true}.
-
--spec send_packets(
-    nquic_socket:t(),
-    nquic_socket:sockaddr(),
-    undefined | pos_integer(),
-    boolean(),
-    [iodata()]
-) -> ok.
-send_packets(_Socket, _Peer, _GsoSize, _Connected, []) ->
-    ok;
-send_packets(Socket, Peer, undefined, Connected, [Pkt | Rest]) ->
-    _ = do_send(Socket, Peer, Connected, Pkt),
-    send_packets(Socket, Peer, undefined, Connected, Rest);
-send_packets(Socket, Peer, GsoSize, Connected, [Pkt | Rest]) ->
-    case iolist_size(Pkt) of
-        GsoSize ->
-            {Group, Rest1} = take_gso_run(
-                Rest, GsoSize, ?GSO_BATCH_BUDGET - GsoSize, [Pkt]
-            ),
-            _ = do_send(Socket, Peer, Connected, Group),
-            send_packets(Socket, Peer, GsoSize, Connected, Rest1);
-        _ ->
-            _ = do_send(Socket, Peer, Connected, Pkt),
-            send_packets(Socket, Peer, GsoSize, Connected, Rest)
-    end.
-
--spec take_gso_run([iodata()], pos_integer(), integer(), [iodata(), ...]) ->
-    {[iodata(), ...], [iodata()]}.
-take_gso_run([], _GsoSize, _Budget, Acc) ->
-    {lists:reverse(Acc), []};
-take_gso_run([Pkt | Rest], GsoSize, Budget, Acc) ->
-    case iolist_size(Pkt) of
-        GsoSize when Budget >= GsoSize ->
-            take_gso_run(Rest, GsoSize, Budget - GsoSize, [Pkt | Acc]);
-        Smaller when Smaller < GsoSize, Budget >= Smaller ->
-            {lists:reverse([Pkt | Acc]), Rest};
-        _ ->
-            {lists:reverse(Acc), [Pkt | Rest]}
-    end.
 
 -doc """
 Drive handshake-complete handoff.

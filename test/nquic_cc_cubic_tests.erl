@@ -1,58 +1,12 @@
-%%%-------------------------------------------------------------------
-%%% EUnit tests for {@link nquic_cc_cubic}.
-%%%
-%%% The `state' record and CUBIC macros mirror the source-of-truth
-%%% in `src/nquic_cc_cubic.erl'; if the production constants/layout
-%%% change, update the values below to keep the tests in sync.
-%%%-------------------------------------------------------------------
 -module(nquic_cc_cubic_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
+-include("nquic_cc_cubic.hrl").
 -include("nquic_loss.hrl").
--define(BETA_CUBIC, 0.7).
--define(C, 0.4).
--define(INFINITY_SSTHRESH, 16#FFFFFFFFFFFFFFFF).
--define(NO_RECOVERY, -576460752303423488).
 
--record(state, {
-    cwnd :: non_neg_integer(),
-    ssthresh = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    max_datagram_size = 1200 :: pos_integer(),
-    recovery_start_time = ?NO_RECOVERY :: integer(),
-    w_max = 0 :: non_neg_integer(),
-    w_last_max = 0 :: non_neg_integer(),
-    epoch_start = 0 :: non_neg_integer(),
-    origin_point = 0 :: non_neg_integer(),
-    tcp_cwnd = 0 :: non_neg_integer(),
-    cubic_k = undefined :: undefined | float(),
-    congestion_occurred = false :: boolean(),
-    prev_state ::
-        undefined
-        | {
-            non_neg_integer(),
-            non_neg_integer(),
-            integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            undefined | float(),
-            boolean()
-        },
-    hystart_phase = standard ::
-        standard | slow_start | css | done,
-    last_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    current_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    rtt_sample_count = 0 :: non_neg_integer(),
-    last_round_largest_pn = 0 :: non_neg_integer(),
-    css_baseline_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    css_round_count = 0 :: non_neg_integer(),
-    undo_bytes = 0 :: non_neg_integer(),
-    app_limited_since :: integer() | undefined,
-    sent_in_flight = 0 :: non_neg_integer()
-}).
+-define(RFC9438_BETA_CUBIC, 0.7).
+-define(RFC9438_C, 0.4).
 
 init_test() ->
     S = nquic_cc_cubic:init(),
@@ -138,7 +92,7 @@ cubic_window_test() ->
     MSS = 1200,
     WMax = 12000,
     WMaxSeg = WMax / MSS,
-    K = nquic_cc_cubic:cbrt(WMaxSeg * (1.0 - ?BETA_CUBIC) / ?C),
+    K = nquic_cc_cubic:cbrt(WMaxSeg * (1.0 - ?RFC9438_BETA_CUBIC) / ?RFC9438_C),
     K_us = round(K * 1000000),
     W_at_K = nquic_cc_cubic:cubic_window(K_us, WMax, MSS),
     ?assertEqual(WMax, W_at_K),
@@ -163,11 +117,11 @@ cubic_window_cached_k_equivalence_test() ->
     ].
 
 cached_path(T_us, WMax, MSS) ->
-    K = nquic_cc_cubic:cbrt((WMax / MSS) * (1.0 - ?BETA_CUBIC) / ?C),
+    K = nquic_cc_cubic:cbrt((WMax / MSS) * (1.0 - ?RFC9438_BETA_CUBIC) / ?RFC9438_C),
     WMaxSeg = WMax / MSS,
     T_sec = T_us / 1000000.0,
     D = T_sec - K,
-    WCubicSeg = ?C * D * D * D + WMaxSeg,
+    WCubicSeg = ?RFC9438_C * D * D * D + WMaxSeg,
     erlang:floor(erlang:max(MSS, round(WCubicSeg * MSS))).
 
 tcp_friendly_region_test() ->
@@ -460,7 +414,7 @@ target_clamped_to_one_and_a_half_cwnd_test() ->
 
 k_from_w_max_and_cwnd_epoch_test() ->
     S1 = ack_in_flight(ca_state(24000, 30000), 1, 24000, 50_000),
-    Expected = nquic_cc_cubic:cbrt((30000 - 24000) / 1200 / ?C),
+    Expected = nquic_cc_cubic:cbrt((30000 - 24000) / 1200 / ?RFC9438_C),
     ?assert(abs(S1#state.cubic_k - Expected) < 1.0e-9),
     ?assertEqual(30000, S1#state.origin_point).
 

@@ -1,6 +1,8 @@
 -ifndef(NQUIC_TRANSPORT_HRL).
 -define(NQUIC_TRANSPORT_HRL, true).
 
+-define(MIN_UDP_PAYLOAD_SIZE, 1200).
+
 -record(transport_params, {
     original_destination_connection_id :: nquic:connection_id() | undefined,
     max_idle_timeout = 0 :: non_neg_integer(),

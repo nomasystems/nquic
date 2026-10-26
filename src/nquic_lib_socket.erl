@@ -2,12 +2,13 @@
 -moduledoc false.
 
 -include("nquic_frame.hrl").
--include("nquic_socket.hrl").
 -export([
     drain_stale_socket_msgs/1,
     send_packets/5,
     socket_recv_for_ctx/1
 ]).
+
+-define(GSO_BATCH_BUDGET, 65000).
 
 -spec drain_stale_socket_msgs(nquic_socket:t()) -> ok.
 drain_stale_socket_msgs(Socket) ->

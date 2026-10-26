@@ -11,6 +11,7 @@ States: disabled, base, searching, search_complete, error.
 """.
 
 -include("nquic_frame.hrl").
+-include("nquic_pmtud.hrl").
 -export([
     disable/1,
     enable/1,
@@ -30,22 +31,9 @@ States: disabled, base, searching, search_complete, error.
 
 -export_type([pmtud_state/0]).
 
--define(BASE_PLPMTU, 1200).
--define(MAX_PLPMTU, 1452).
 -define(MIN_PROBE_STEP, 20).
 -define(MAX_PROBE_RETRIES, 3).
 -define(REPROBE_INTERVAL_MS, 600000).
-
--record(pmtud, {
-    state = disabled :: disabled | base | searching | search_complete | error,
-    current_mtu = ?BASE_PLPMTU :: pos_integer(),
-    probe_size = 0 :: non_neg_integer(),
-    probe_count = 0 :: non_neg_integer(),
-    search_low = ?BASE_PLPMTU :: pos_integer(),
-    search_high = ?MAX_PLPMTU :: pos_integer(),
-    probe_pending = false :: boolean(),
-    last_probe_time = 0 :: non_neg_integer()
-}).
 
 -type pmtud_state() :: #pmtud{}.
 

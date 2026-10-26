@@ -17,6 +17,7 @@ controller's window collapses to `2 * max_datagram_size`.
 
 -include("nquic_frame.hrl").
 -include("nquic_loss.hrl").
+-include("nquic_transport.hrl").
 -export([
     detect_loss/4,
 
@@ -39,6 +40,7 @@ controller's window collapses to `2 * max_datagram_size`.
     has_received_ack/2,
     init/0,
     init/1,
+    is_ack_eliciting/1,
     on_ack_received/6,
     on_ack_received/7,
     on_packet_sent/6,
@@ -95,53 +97,6 @@ controller's window collapses to `2 * max_datagram_size`.
 -define(K_PACKET_THRESHOLD, 3).
 -define(K_GRANULARITY_US, 1_000).
 -define(K_PERSISTENT_CONGESTION_THRESHOLD, 3).
--define(K_PACING_FACTOR, 1.25).
--define(K_PACING_BURST_PACKETS, 10).
-
--record(pacer_state, {
-    enabled = false :: boolean(),
-    factor = ?K_PACING_FACTOR :: number(),
-    burst_packets = ?K_PACING_BURST_PACKETS :: pos_integer(),
-    next_send_time :: undefined | integer()
-}).
-
--record(loss_state, {
-    sent_packets = #{
-        initial => nquic_pn_buf:new(),
-        handshake => nquic_pn_buf:new(),
-        application => nquic_pn_buf:new()
-    } :: #{nquic_packet:space() => nquic_pn_buf:buf()},
-
-    largest_acked_packet = #{} :: #{nquic_packet:space() => nquic_packet_number:t()},
-
-    loss_time = #{} :: #{nquic_packet:space() => non_neg_integer()},
-
-    rtt_state :: nquic_rtt:rtt_state(),
-
-    cc_state :: dynamic(),
-
-    bytes_in_flight = 0 :: non_neg_integer(),
-
-    pto_count = 0 :: non_neg_integer(),
-
-    ack_eliciting_in_flight = 0 :: non_neg_integer(),
-
-    first_rtt_sample :: non_neg_integer() | undefined,
-
-    last_send_time :: non_neg_integer() | undefined,
-
-    recently_lost = #{
-        initial => nquic_pn_buf:new(),
-        handshake => nquic_pn_buf:new(),
-        application => nquic_pn_buf:new()
-    } :: #{nquic_packet:space() => nquic_pn_buf:buf()},
-
-    peer_ecn_ce = #{} :: #{nquic_packet:space() => non_neg_integer()},
-    peer_ecn_total = #{} :: #{nquic_packet:space() => non_neg_integer()},
-    ecn_enabled = true :: boolean(),
-    ecn_socket_dirty = false :: boolean(),
-    pacer = #pacer_state{} :: pacer_state()
-}).
 -type pacer_state() :: #pacer_state{}.
 
 -type loss_state() :: #loss_state{}.
@@ -511,12 +466,16 @@ has_padding([]) -> false;
 has_padding([#padding{} | _]) -> true;
 has_padding([_ | T]) -> has_padding(T).
 
+-doc """
+Whether `Frames` holds a frame other than ACK, PADDING or
+CONNECTION_CLOSE (RFC 9002 §2).
+""".
 -spec is_ack_eliciting([nquic_frame:t()]) -> boolean().
 is_ack_eliciting([]) -> false;
 is_ack_eliciting([#ack{} | T]) -> is_ack_eliciting(T);
 is_ack_eliciting([#padding{} | T]) -> is_ack_eliciting(T);
 is_ack_eliciting([#connection_close{} | T]) -> is_ack_eliciting(T);
-is_ack_eliciting(_) -> true.
+is_ack_eliciting([_ | _]) -> true.
 
 -doc "Check whether ECN is enabled for this connection.".
 -spec is_ecn_enabled(loss_state()) -> boolean().
@@ -1088,7 +1047,7 @@ set_ecn_enabled(State, E) -> State#loss_state{ecn_enabled = E}.
 
 -doc "Set the maximum datagram size used by the congestion controller.".
 -spec set_max_datagram_size(loss_state(), pos_integer()) -> loss_state().
-set_max_datagram_size(State, MaxSize) when MaxSize >= 1200 ->
+set_max_datagram_size(State, MaxSize) when MaxSize >= ?MIN_UDP_PAYLOAD_SIZE ->
     #loss_state{cc_state = CC} = State,
     NewCC = nquic_cc:set_max_datagram_size(CC, MaxSize),
     State#loss_state{cc_state = NewCC}.

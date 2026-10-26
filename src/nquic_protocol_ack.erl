@@ -20,7 +20,6 @@ module-qualified.
     build_ack_for_space/2,
     force_queue_ack/2,
     insert_pn_range/2,
-    is_ack_eliciting/1,
     maybe_queue_ack/3,
     merge_ranges/1,
     prune_received_ranges/2,
@@ -135,13 +134,6 @@ insert_pn_range(PN, [{High, Low} | Rest]) ->
             [{High, Low} | insert_pn_range(PN, Rest)]
     end.
 
--spec is_ack_eliciting([nquic_frame:t()]) -> boolean().
-is_ack_eliciting([]) -> false;
-is_ack_eliciting([#ack{} | Rest]) -> is_ack_eliciting(Rest);
-is_ack_eliciting([#padding{} | Rest]) -> is_ack_eliciting(Rest);
-is_ack_eliciting([#connection_close{} | Rest]) -> is_ack_eliciting(Rest);
-is_ack_eliciting([_ | _]) -> true.
-
 -spec max_largest_acked([nquic_frame:t()], nquic_packet_number:t() | undefined) ->
     nquic_packet_number:t() | undefined.
 max_largest_acked([], Acc) ->
@@ -156,7 +148,7 @@ max_largest_acked([_ | Rest], Acc) ->
 -spec maybe_queue_ack(nquic_packet:header(), [nquic_frame:t()], nquic_protocol:state()) ->
     nquic_protocol:state().
 maybe_queue_ack(Header, Frames, State) ->
-    queue_ack_if_eliciting(is_ack_eliciting(Frames), Header, State).
+    queue_ack_if_eliciting(nquic_loss:is_ack_eliciting(Frames), Header, State).
 
 -spec merge_ranges([{nquic_packet_number:t(), nquic_packet_number:t()}]) ->
     [{nquic_packet_number:t(), nquic_packet_number:t()}].

@@ -8,7 +8,7 @@ Supports AES-128-ECB, AES-256-ECB, and ChaCha20 mask generation.
 The 5-byte mask protects 1 byte of flags and up to 4 bytes of packet number.
 """.
 
--export([generate_mask/3, mask/5, mask_header/4, unmask/5, unmask_header/5]).
+-export([generate_mask/3, mask/5, mask_header/4, sample/3, unmask/5, unmask_header/5]).
 -export([generate_mask_ctx/2, generate_mask_from_keys/3, init_hp_ctx/2, unmask_header_mask/3]).
 
 -spec apply_mask(<<_:40>>, binary(), non_neg_integer()) -> binary().
@@ -138,6 +138,19 @@ mask_header(<<HP0:8, M1:8, M2:8, M3:8, M4:8>>, HeaderBin, PnOffset, IsLong) ->
             U = P bxor ((M1 bsl 24) bor (M2 bsl 16) bor (M3 bsl 8) bor M4),
             {<<NewP0:8, Middle/binary, U:32>>, 4}
     end.
+
+-doc """
+Take the 16-byte header protection sample at `SampleOff` bytes into
+the ciphertext (RFC 9001 §5.4.2). When the ciphertext is shorter than
+`SampleOff + 16`, the sample continues into the AEAD `Tag`.
+""".
+-spec sample(binary(), binary(), non_neg_integer()) -> binary().
+sample(Ciphertext, _Tag, SampleOff) when byte_size(Ciphertext) >= SampleOff + 16 ->
+    <<_:SampleOff/binary, Sample:16/binary, _/binary>> = Ciphertext,
+    Sample;
+sample(Ciphertext, Tag, SampleOff) ->
+    <<_:SampleOff/binary, Sample:16/binary, _/binary>> = <<Ciphertext/binary, Tag/binary>>,
+    Sample.
 
 -doc "Remove header protection from a packet.".
 -spec unmask(

@@ -54,8 +54,7 @@ builders module-qualified; the dependency is one-way.
 ]).
 
 -export([
-    ensure_sample_size/2,
-    hp_sample/3
+    ensure_sample_size/2
 ]).
 
 -export([
@@ -75,7 +74,6 @@ builders module-qualified; the dependency is one-way.
 
 -type pre_encoded() :: {non_neg_integer(), iodata(), nquic_frame:t()}.
 -define(AEAD_TAG_SIZE, 16).
--define(MIN_UDP_PAYLOAD_SIZE, 1200).
 -define(DEFAULT_MAX_ACK_DELAY_US, 25_000).
 
 -record(app_send_ctx, {
@@ -126,7 +124,7 @@ build_app_packet(Frames, State) ->
             PnOffset = byte_size(HeaderBin) - PnLen,
             {Ciphertext, Tag} = nquic_crypto:encrypt(Cipher, Key, IV, PN, HeaderBin, Payload),
             SampleOff = 4 - PnLen,
-            Sample = hp_sample(Ciphertext, Tag, SampleOff),
+            Sample = nquic_hp:sample(Ciphertext, Tag, SampleOff),
             Mask = nquic_hp:generate_mask_from_keys(RoleKeys, Cipher, Sample),
             {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, false),
             MaskedPacket = [MaskedHeader, Ciphertext, Tag],
@@ -197,7 +195,7 @@ build_handshake_packet(Frames, State) ->
                 Cipher, Key, IV, PN, HeaderBin, Payload
             ),
             SampleOff = 4 - PnLen,
-            Sample = hp_sample(Ciphertext, Tag, SampleOff),
+            Sample = nquic_hp:sample(Ciphertext, Tag, SampleOff),
             Mask = nquic_hp:generate_mask_from_keys(RoleKeys, Cipher, Sample),
             {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, true),
             MaskedPacket = [MaskedHeader, Ciphertext, Tag],
@@ -408,7 +406,7 @@ build_initial_packet(Frames, State, RetryToken) ->
             },
             TrialHeaderBin = nquic_packet:encode_header(TrialHeader),
             TrialHeaderSize = byte_size(TrialHeaderBin),
-            MinPayloadSize = max(0, 1200 - TrialHeaderSize - ?AEAD_TAG_SIZE),
+            MinPayloadSize = max(0, ?MIN_UDP_PAYLOAD_SIZE - TrialHeaderSize - ?AEAD_TAG_SIZE),
             PadLen = max(0, MinPayloadSize - Payload0Size),
             Padding = <<0:(PadLen * 8)>>,
             PaddedPayloadSize = Payload0Size + PadLen,
@@ -425,7 +423,7 @@ build_initial_packet(Frames, State, RetryToken) ->
                 aes_128_gcm, Key, IV, PN, HeaderBin, Payload
             ),
             SampleOff = 4 - PnLen,
-            Sample = hp_sample(Ciphertext, Tag, SampleOff),
+            Sample = nquic_hp:sample(Ciphertext, Tag, SampleOff),
             Mask = nquic_hp:generate_mask_from_keys(RoleKeys, aes_128_gcm, Sample),
             {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, true),
             MaskedPacket = [MaskedHeader, Ciphertext, Tag],
@@ -502,7 +500,7 @@ build_app_packet_pre(PreEncoded, Time, State) ->
             PnOffset = HeaderSize - PnLen,
             {Ciphertext, Tag} = nquic_crypto:encrypt(Cipher, Key, IV, PN, HeaderBin, Payload),
             SampleOff = 4 - PnLen,
-            Sample = hp_sample(Ciphertext, Tag, SampleOff),
+            Sample = nquic_hp:sample(Ciphertext, Tag, SampleOff),
             Mask = nquic_hp:generate_mask_from_keys(RoleKeys, Cipher, Sample),
             {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, false),
             MaskedPacket = [MaskedHeader, Ciphertext, Tag],
@@ -564,7 +562,7 @@ build_app_packet_pre_ctx(PreEncoded, Ctx, State) ->
     PnOffset = HeaderSize - PnLen,
     {Ciphertext, Tag} = nquic_crypto:encrypt(Cipher, Key, IV, PN, HeaderBin, Payload),
     SampleOff = 4 - PnLen,
-    Sample = hp_sample(Ciphertext, Tag, SampleOff),
+    Sample = nquic_hp:sample(Ciphertext, Tag, SampleOff),
     Mask = generate_mask_for_source(HpSource, Cipher, Sample),
     {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, false),
     MaskedPacket = [MaskedHeader, Ciphertext, Tag],
@@ -665,7 +663,7 @@ build_zero_rtt_packet_pre(PreEncoded, Time, State) ->
             PnOffset = HeaderSize - PnLen,
             {Ciphertext, Tag} = nquic_crypto:encrypt(Cipher, Key, IV, PN, HeaderBin, Payload),
             SampleOff = 4 - PnLen,
-            Sample = hp_sample(Ciphertext, Tag, SampleOff),
+            Sample = nquic_hp:sample(Ciphertext, Tag, SampleOff),
             Mask = nquic_hp:generate_mask_from_keys(RoleKeys, Cipher, Sample),
             {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, true),
             MaskedPacket = [MaskedHeader, Ciphertext, Tag],
@@ -1006,14 +1004,6 @@ maybe_pad_to_gso_ctx(Payload, PayloadSize, Frames, HeaderSize, GsoSize, PadBin) 
 has_stream_frame([]) -> false;
 has_stream_frame([#stream{} | _]) -> true;
 has_stream_frame([_ | Rest]) -> has_stream_frame(Rest).
-
--spec hp_sample(binary(), binary(), non_neg_integer()) -> binary().
-hp_sample(Ciphertext, _Tag, SampleOff) when byte_size(Ciphertext) >= SampleOff + 16 ->
-    <<_:SampleOff/binary, Sample:16/binary, _/binary>> = Ciphertext,
-    Sample;
-hp_sample(Ciphertext, Tag, SampleOff) ->
-    <<_:SampleOff/binary, Sample:16/binary, _/binary>> = <<Ciphertext/binary, Tag/binary>>,
-    Sample.
 
 -spec pad_bin() -> binary().
 pad_bin() ->
