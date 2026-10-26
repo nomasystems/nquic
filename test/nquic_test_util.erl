@@ -2,7 +2,8 @@
 
 -export([
     ensure_test_certs/1,
-    ensure_test_fixture/2
+    ensure_test_fixture/2,
+    recv_all/3
 ]).
 
 -spec ensure_test_certs(file:filename()) -> ok.
@@ -53,3 +54,17 @@ write_chunks(Fd, Remaining) ->
     Chunk = min(Remaining, 65_536),
     ok = file:write(Fd, <<0:(Chunk * 8)>>),
     write_chunks(Fd, Remaining - Chunk).
+
+-spec recv_all(nquic_ctx_driver:driver(), nquic:stream_id(), timeout()) ->
+    {ok, binary(), fin} | {error, term()}.
+recv_all(Drv, StreamId, Timeout) ->
+    recv_all(Drv, StreamId, Timeout, <<>>).
+
+-spec recv_all(nquic_ctx_driver:driver(), nquic:stream_id(), timeout(), binary()) ->
+    {ok, binary(), fin} | {error, term()}.
+recv_all(Drv, StreamId, Timeout, Acc) ->
+    case nquic_ctx_driver:recv(Drv, StreamId, Timeout) of
+        {ok, Data, fin} -> {ok, <<Acc/binary, Data/binary>>, fin};
+        {ok, Data, nofin} -> recv_all(Drv, StreamId, Timeout, <<Acc/binary, Data/binary>>);
+        {error, _} = Err -> Err
+    end.

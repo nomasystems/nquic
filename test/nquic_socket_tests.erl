@@ -18,6 +18,14 @@ open_specific_port_test() ->
     ?assertEqual(TestPort, ActualPort),
     ?assertEqual(ok, nquic_socket:close(Socket)).
 
+open_default_recbuf_requests_four_mib_test() ->
+    {ok, Socket} = nquic_socket:open(#{}),
+    {ok, RcvBuf} = socket:getopt(Socket, socket, rcvbuf),
+    ?assertEqual(ok, nquic_socket:close(Socket)),
+    {ok, RmemMax} = file:read_file("/proc/sys/net/core/rmem_max"),
+    Granted = min(4 * 1024 * 1024, binary_to_integer(string:trim(RmemMax))),
+    ?assertEqual(2 * Granted, RcvBuf).
+
 open_with_custom_buffers_test() ->
     Opts = #{recbuf => 1024 * 1024, sndbuf => 512 * 1024},
     {ok, Socket} = nquic_socket:open(Opts),

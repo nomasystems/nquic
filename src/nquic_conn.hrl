@@ -94,7 +94,8 @@
     pending_handshake_frames = [] :: [nquic_frame:t()],
     pending_app_frames = [] :: [nquic_frame:t()],
     pending_app_pre_encoded = [] :: [{non_neg_integer(), iodata(), nquic_frame:t()}],
-    queued_app_send_bytes = 0 :: non_neg_integer()
+    queued_app_send_bytes = 0 :: non_neg_integer(),
+    cwnd_exempt = false :: boolean()
 }).
 
 -record(conn_path_mgmt, {
@@ -126,6 +127,7 @@
     pn_spaces = #{} :: #{nquic_packet:space() => map()},
     app_next_pn = 0 :: non_neg_integer(),
     app_largest_received = -1 :: integer(),
+    app_largest_received_us :: integer() | undefined,
 
     loss_state :: nquic_loss:loss_state() | undefined,
 
@@ -147,7 +149,7 @@
     pending_ack_count = 0 :: non_neg_integer(),
 
     last_idle_ms :: non_neg_integer() | infinity | undefined,
-    last_pto_ms :: non_neg_integer() | cancel | undefined,
+    last_pto_ms :: nquic_protocol_timer:loss_detection_timer() | undefined,
 
     recv_ecn = not_ect :: nquic_socket:ecn_mark(),
 

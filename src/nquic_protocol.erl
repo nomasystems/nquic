@@ -256,12 +256,12 @@ dispatch_send_lookup({ok, StreamState0, Streams0}, StreamID, DataBin, Fin, State
         State
     ).
 
--spec do_flush(state()) ->
+-spec do_flush(all | control, state()) ->
     {ok, [iodata()], state(), [timeout_action()]} | {ok, state()}.
-do_flush(State0) ->
+do_flush(AppFrames, State0) ->
     {InitPkts, State1} = nquic_protocol_send_queues:flush_initial(State0),
     {HsPkts, State2} = nquic_protocol_send_queues:flush_handshake(State1),
-    case nquic_protocol_send_queues:flush_app(State2) of
+    case flush_app_frames(AppFrames, State2) of
         {ok, AppPkts, State3} ->
             Packets = InitPkts ++ HsPkts ++ AppPkts,
             {PtoActions, State4} = flush_pto_actions(State0, State3),
@@ -275,6 +275,13 @@ do_flush(State0) ->
                     {ok, Packets, State4, PtoActions}
             end
     end.
+
+-spec flush_app_frames(all | control, state()) ->
+    {ok, [iodata()], state()} | {ok, state()}.
+flush_app_frames(all, State) ->
+    nquic_protocol_send_queues:flush_app(State);
+flush_app_frames(control, State) ->
+    nquic_protocol_send_queues:flush_app_control(State).
 
 -spec flush_pto_actions(state(), state()) -> {[timeout_action()], state()}.
 flush_pto_actions(#conn_state{loss_state = Before}, #conn_state{loss_state = After} = State) ->
@@ -355,6 +362,13 @@ if there is nothing to flush.
 The timer actions restart the PTO only when the flush sent an
 ack-eliciting packet (RFC 9002 §6.2). A flush of ACK-only packets
 leaves the PTO timer as it is.
+When the pacer blocks, the flush sends the Initial and Handshake frames,
+the pending ACK and the 1-RTT control frames, and keeps STREAM and
+DATAGRAM data queued. The timer actions then include the `pace` timer.
+After a PTO or on entry to recovery, the next packet can exceed the
+congestion window (RFC 9002 §6.2.4 and §7.3.2). That flush sends as if
+the pacer passed, still bounded by the window, and also sets the `pace`
+timer.
 The packets are produced in encryption-level order: Initial first,
 then Handshake, then 1-RTT (application). Each is a separate datagram;
 there is no in-datagram coalescing today, so the wrapper sends each
@@ -378,15 +392,22 @@ flush(
 flush(State0) ->
     case nquic_loss:pacer_check(State0#conn_state.loss_state, monotonic_us()) of
         pass ->
-            do_flush(State0);
+            do_flush(all, State0);
         {block, NextUs} ->
-            {ok, [], State0, [pacer_timer_action(NextUs)]}
+            add_pacer_timer(NextUs, do_flush(paced_flush(State0), State0))
     end.
+
+-spec paced_flush(state()) -> all | control.
+paced_flush(#conn_state{flow = #conn_flow{cwnd_exempt = true}}) -> all;
+paced_flush(_State) -> control.
 
 -doc """
 Handle a timer expiration before the connection is established.
 
-On a PTO the probes go to every space in `[initial, handshake]` with
+The `pto` timer is the loss detection timer. When a loss time is set,
+the packets lost at that time are queued again
+(`nquic_protocol_send:handle_loss_timeout/2`). Otherwise it is a PTO:
+the probes go to every space in `[initial, handshake]` with
 ack-eliciting packets in flight, and resend the CRYPTO data of those
 packets (`nquic_protocol_send:queue_handshake_probes/2`).
 `Phase` is the encryption level that the owner drives. It selects the
@@ -401,7 +422,7 @@ and switches to the established `handle_timeout/2` when it observes
 handle_handshake_timeout(_Phase, idle, State) ->
     {error, {transport_error, idle_timeout}, State};
 handle_handshake_timeout(Phase, pto, State) ->
-    State1 = nquic_protocol_send:queue_handshake_probes(Phase, State),
+    State1 = nquic_protocol_send:handle_handshake_timer(Phase, State),
     {TimerActions, State2} = nquic_protocol_timer:arm_pto_timer(State1),
     {ok, [], State2, TimerActions};
 handle_handshake_timeout(_Phase, Type, State) ->
@@ -456,6 +477,35 @@ handle_packet_notimers(PacketBin, Source, State, ECN) ->
     State2 = nquic_protocol_migration:apply_peer_update(Source, State1),
     nquic_protocol_recv:process_datagram(PacketBin, State2, []).
 
+-spec handle_loss_time(nquic_packet:space(), state()) ->
+    {ok, [event()], state(), [timeout_action()]}.
+handle_loss_time(Space, #conn_state{loss_state = Before} = State) ->
+    State1 = nquic_protocol_send:handle_loss_timeout(Space, State),
+    InFlight = nquic_loss:get_bytes_in_flight(State1#conn_state.loss_state),
+    {Events, State2} =
+        case InFlight < nquic_loss:get_bytes_in_flight(Before) of
+            true -> nquic_protocol_streams_send:scan_blocked_streams(State1);
+            false -> {[], State1}
+        end,
+    {TimerActions, State3} = nquic_protocol_timer:arm_pto_timer(State2),
+    {ok, Events, State3, TimerActions}.
+
+-spec handle_pto(handshake | application, state()) ->
+    {ok, [event()], state(), [timeout_action()]}.
+handle_pto(handshake, State) ->
+    State1 = nquic_protocol_send:queue_handshake_probes(handshake, State),
+    {TimerActions, State2} = nquic_protocol_timer:arm_pto_timer(State1),
+    {ok, [], State2, TimerActions};
+handle_pto(application, State) ->
+    LossState1 = nquic_loss:on_pto(State#conn_state.loss_state),
+    State1 = State#conn_state{loss_state = LossState1},
+    State2 = nquic_protocol_migration:maybe_detect_black_hole(State1),
+    State3 = nquic_protocol_send:queue_app_probe(
+        nquic_protocol_send_queues:set_cwnd_exempt(State2)
+    ),
+    TimerActions = nquic_protocol_timer:compute_pto_timer_actions(State3),
+    {ok, [], State3, TimerActions}.
+
 -spec handle_stream_send(
     {ok, #stream_state{}} | {error, term()},
     nquic:stream_id(),
@@ -478,6 +528,18 @@ handle_stream_send({ok, NewStreamState}, StreamID, Streams0, DataLen, State) ->
 Handle a timer expiry.
 Returns events, updated state, and new timer actions.
 The caller should deliver events and schedule returned timers.
+
+The `pto` timer is the loss detection timer of RFC 9002 Appendix A.8.
+When a loss time is set, the packets lost at that time are queued again
+and the timer restarts. Otherwise it is a PTO. The 1-RTT probe carries
+new data, the oldest unacknowledged data or a PING
+(`nquic_protocol_send:queue_app_probe/1`), and the next flush can send
+one packet over the congestion window and the pacer.
+
+While Handshake keys exist and the Handshake space has ack-eliciting
+packets in flight, a PTO probes the Handshake space as
+`handle_handshake_timeout/3` does (RFC 9002 Appendix A.8). This resends
+a lost client Finished before the handshake is confirmed.
 """.
 -spec handle_timeout(timer_type(), state()) ->
     {ok, [event()], state(), [timeout_action()]}
@@ -485,12 +547,10 @@ The caller should deliver events and schedule returned timers.
 handle_timeout(idle, State) ->
     {error, {transport_error, idle_timeout}, State};
 handle_timeout(pto, State) ->
-    LossState1 = nquic_loss:on_pto(State#conn_state.loss_state),
-    State1 = State#conn_state{loss_state = LossState1},
-    State2 = nquic_protocol_migration:maybe_detect_black_hole(State1),
-    {ok, State3} = nquic_protocol_send_queues:queue_app_frame(#ping{}, State2),
-    TimerActions = nquic_protocol_timer:compute_pto_timer_actions(State3),
-    {ok, [], State3, TimerActions};
+    case nquic_loss:get_loss_timer(State#conn_state.loss_state) of
+        {_, Space} -> handle_loss_time(Space, State);
+        undefined -> handle_pto(pto_space(State), State)
+    end;
 handle_timeout(
     path_validation, #conn_state{path = #conn_path_mgmt{path_state = undefined}} = State
 ) ->
@@ -627,6 +687,14 @@ open_stream(Opts, State) ->
             {ok, StreamId, State1#conn_state{streams_state = SS2}}
     end.
 
+-spec add_pacer_timer(
+    integer(), {ok, [iodata()], state(), [timeout_action()]} | {ok, state()}
+) -> {ok, [iodata()], state(), [timeout_action()]}.
+add_pacer_timer(NextUs, {ok, State}) ->
+    {ok, [], State, [pacer_timer_action(NextUs)]};
+add_pacer_timer(NextUs, {ok, Packets, State, Actions}) ->
+    {ok, Packets, State, [pacer_timer_action(NextUs) | Actions]}.
+
 -spec pacer_timer_action(integer()) -> {set_timer, pace, pos_integer()}.
 pacer_timer_action(NextUs) ->
     Now = monotonic_us(),
@@ -669,6 +737,16 @@ pending_stream_ids(#conn_state{streams_state = #conn_streams{streams = Streams},
         [],
         Streams
     ).
+
+-spec pto_space(state()) -> handshake | application.
+pto_space(#conn_state{loss_state = LS, crypto = #conn_crypto{keys = Keys}}) ->
+    case
+        maps:is_key(handshake, Keys) andalso
+            nquic_loss:get_ack_eliciting_frames(LS, handshake) =/= []
+    of
+        true -> handshake;
+        false -> application
+    end.
 
 -spec queue_capped(
     non_neg_integer(),

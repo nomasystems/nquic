@@ -54,8 +54,38 @@ ack_eliciting_counter_bulk_prop_test_() ->
     {timeout, 120,
         ?_assert(triq:check(triq:numtests(30, prop_ack_eliciting_counter_bulk())))}.
 
+space_clear_in_flight_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(300, prop_space_clear_in_flight())))}.
+
 pto_monotonic_prop_test_() ->
     {timeout, 60, ?_assert(triq:check(triq:numtests(200, prop_pto_monotonic())))}.
+
+ack_only_not_in_flight_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(500, prop_ack_only_not_in_flight())))}.
+
+cubic_ack_after_any_events_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(1000, prop_cubic_ack_after_any_events())))}.
+
+cubic_app_limited_ack_keeps_cwnd_prop_test_() ->
+    {timeout, 60,
+        ?_assert(triq:check(triq:numtests(1000, prop_cubic_app_limited_ack_keeps_cwnd())))}.
+
+cubic_epoch_growth_clamped_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(1000, prop_cubic_epoch_growth_clamped())))}.
+
+cubic_curve_starts_at_cwnd_epoch_prop_test_() ->
+    {timeout, 60,
+        ?_assert(triq:check(triq:numtests(1000, prop_cubic_curve_starts_at_cwnd_epoch())))}.
+
+cubic_rollback_after_every_lost_byte_prop_test_() ->
+    {timeout, 60,
+        ?_assert(triq:check(triq:numtests(1000, prop_cubic_rollback_after_every_lost_byte())))}.
+
+cc_idle_reset_halves_cwnd_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(1000, prop_cc_idle_reset_halves_cwnd())))}.
+
+no_loss_above_largest_acked_prop_test_() ->
+    {timeout, 60, ?_assert(triq:check(triq:numtests(1000, prop_no_loss_above_largest_acked())))}.
 
 
 varint() ->
@@ -437,6 +467,44 @@ prop_ack_eliciting_counter_bulk() ->
             nquic_loss:get_ack_eliciting_in_flight(Final) =:= Recount
         end).
 
+space_clear_in_flight_op() ->
+    oneof([
+        {send, oneof([initial, handshake, application]), int(100, 1500), bool()},
+        {clear, oneof([initial, handshake])}
+    ]).
+
+apply_space_clear_op({send, Space, Size, AE}, {State, PN}) ->
+    Frames =
+        case AE of
+            true -> [#ping{}];
+            false -> [#padding{}]
+        end,
+    {nquic_loss:on_packet_sent(State, Space, PN, Frames, PN * 1000, Size), PN + 1};
+apply_space_clear_op({clear, initial}, {State, PN}) ->
+    {nquic_loss:clear_initial_space(State), PN};
+apply_space_clear_op({clear, handshake}, {State, PN}) ->
+    {nquic_loss:clear_handshake_spaces(State), PN}.
+
+in_flight_matches_tracked(State) ->
+    InFlight = [P || P <- nquic_loss:get_sent_packets(State), P#sent_packet.in_flight],
+    nquic_loss:get_bytes_in_flight(State) =:= lists:sum([P#sent_packet.size || P <- InFlight])
+        andalso nquic_loss:get_ack_eliciting_in_flight(State)
+            =:= length([P || P <- InFlight, P#sent_packet.ack_eliciting]).
+
+prop_space_clear_in_flight() ->
+    ?FORALL(Ops, list(space_clear_in_flight_op()),
+        begin
+            {_, Checks} = lists:foldl(
+                fun(Op, {Acc, Results}) ->
+                    {State1, _} = Next = apply_space_clear_op(Op, Acc),
+                    {Next, [in_flight_matches_tracked(State1) | Results]}
+                end,
+                {{nquic_loss:init(), 0}, []},
+                Ops
+            ),
+            lists:all(fun(Ok) -> Ok end, Checks)
+        end).
+
 prop_pto_monotonic() ->
     ?FORALL({Initial, K}, {nquic_loss_init_state(), int(0, 6)},
         begin
@@ -523,4 +591,231 @@ prop_handshake_probe_crypto_cover() ->
                     fun({{_, End}, {Next, _}}) -> End < Next end,
                     lists:zip(lists:droplast(Ends), tl(Ends))
                 )
+        end).
+
+cc_event() ->
+    oneof([
+        {sent, int(1, 65527)},
+        {acked, int(1, 65527), int(1, 500_000), oneof([cwnd_limited, app_limited])},
+        {lost, oneof([fresh, stale])},
+        {mss, int(1200, 65527)},
+        {spurious, int(1, 65527)},
+        persistent,
+        idle
+    ]).
+
+apply_cc_event({sent, Size}, {CC, PN}) ->
+    {nquic_cc:on_packet_sent(CC, Size, 0), PN};
+apply_cc_event({acked, Size, Rtt, Load}, {CC, PN}) ->
+    Packet = #sent_packet{
+        packet_number = PN,
+        time_sent = erlang:monotonic_time(microsecond) + 1,
+        size = Size,
+        ack_eliciting = true,
+        in_flight = true,
+        frames = []
+    },
+    RTTStats = #{smoothed_rtt => Rtt, latest_rtt => Rtt, min_rtt => Rtt, rttvar => Rtt div 2},
+    InFlight =
+        case Load of
+            cwnd_limited -> nquic_cc:get_cwnd(CC);
+            app_limited -> 0
+        end,
+    {nquic_cc:on_packet_acked(CC, Packet, InFlight, RTTStats), PN + 1};
+apply_cc_event({lost, fresh}, {CC, PN}) ->
+    {nquic_cc:on_congestion_event(CC, 1200, 0, erlang:monotonic_time(microsecond) + 1), PN};
+apply_cc_event({lost, stale}, {CC, PN}) ->
+    {nquic_cc:on_congestion_event(CC, 1200, 0, 0), PN};
+apply_cc_event({mss, Size}, {CC, PN}) ->
+    {nquic_cc:set_max_datagram_size(CC, Size), PN};
+apply_cc_event({spurious, Bytes}, {CC, PN}) ->
+    {nquic_cc:on_spurious_congestion(CC, Bytes), PN};
+apply_cc_event(persistent, {CC, PN}) ->
+    {nquic_cc:on_persistent_congestion(CC), PN};
+apply_cc_event(idle, {CC, PN}) ->
+    {nquic_cc:on_idle_reset(CC), PN}.
+
+prop_cubic_ack_after_any_events() ->
+    ?FORALL({SlowStart, Events}, {oneof([standard, hystart_plus_plus]), list(cc_event())},
+        begin
+            Init = {nquic_cc:new(cubic, #{slow_start => SlowStart}), 0},
+            Final = lists:foldl(
+                fun apply_cc_event/2, Init, Events ++ [{acked, 1200, 25_000, cwnd_limited}]
+            ),
+            {CC, _} = Final,
+            is_integer(nquic_cc:get_cwnd(CC))
+        end).
+
+cubic_after(SlowStart, Events) ->
+    lists:foldl(fun apply_cc_event/2, {nquic_cc:new(cubic, #{slow_start => SlowStart}), 0}, Events).
+
+prop_cubic_app_limited_ack_keeps_cwnd() ->
+    ?FORALL(
+        {SlowStart, Events, Size, Rtt},
+        {oneof([standard, hystart_plus_plus]), list(cc_event()), int(1, 65527), int(1, 500_000)},
+        begin
+            {CC0, _} = Acc = cubic_after(SlowStart, Events),
+            Slack = 3 * nquic_cc:get_max_datagram_size(CC0),
+            ?IMPLIES(
+                nquic_cc:get_cwnd(CC0) > Slack,
+                begin
+                    {CC1, _} = apply_cc_event({acked, Size, Rtt, app_limited}, Acc),
+                    nquic_cc:get_cwnd(CC1) =:= nquic_cc:get_cwnd(CC0)
+                end
+            )
+        end
+    ).
+
+prop_cubic_epoch_growth_clamped() ->
+    ?FORALL(
+        {SlowStart, Events, Rtt},
+        {oneof([standard, hystart_plus_plus]), list(cc_event()), int(1, 100_000_000)},
+        begin
+            {CC0, _} = Acc = cubic_after(SlowStart, Events ++ [{lost, fresh}]),
+            MSS = nquic_cc:get_max_datagram_size(CC0),
+            {CC1, _} = apply_cc_event({acked, MSS, Rtt, cwnd_limited}, Acc),
+            nquic_cc:get_cwnd(CC1) - nquic_cc:get_cwnd(CC0) =< MSS div 2
+        end
+    ).
+
+prop_cubic_curve_starts_at_cwnd_epoch() ->
+    ?FORALL(
+        {WMax, CwndEpoch, MSS},
+        {int(0, 100_000_000), int(2400, 100_000_000), int(1200, 65527)},
+        begin
+            {K, Origin} = nquic_cc_cubic:cubic_epoch(WMax, CwndEpoch, MSS),
+            Start = Origin - 0.4 * K * K * K * MSS,
+            K >= 0 andalso Origin =:= max(WMax, CwndEpoch) andalso abs(Start - CwndEpoch) =< 1
+        end
+    ).
+
+prop_cubic_rollback_after_every_lost_byte() ->
+    ?FORALL(
+        {SlowStart, Events, [Last | Rest] = Lost},
+        {oneof([standard, hystart_plus_plus]), list(cc_event()), non_empty(list(int(1, 1500)))},
+        begin
+            {CC0, _} = cubic_after(SlowStart, Events),
+            SentTime = erlang:monotonic_time(microsecond) + 1,
+            CC1 = nquic_cc:on_congestion_event(CC0, lists:sum(Lost), 0, SentTime),
+            CC2 = lists:foldl(fun(B, C) -> nquic_cc:on_spurious_congestion(C, B) end, CC1, Rest),
+            CC3 = nquic_cc:on_spurious_congestion(CC2, Last),
+            nquic_cc:get_cwnd(CC2) =:= nquic_cc:get_cwnd(CC1) andalso
+                nquic_cc:get_cwnd(CC3) =:= nquic_cc:get_cwnd(CC0)
+        end
+    ).
+
+prop_cc_idle_reset_halves_cwnd() ->
+    ?FORALL(
+        {Algo, SlowStart, Events},
+        {oneof([cubic, newreno]), oneof([standard, hystart_plus_plus]), list(cc_event())},
+        begin
+            Init = {nquic_cc:new(Algo, #{slow_start => SlowStart}), 0},
+            {CC0, _} = lists:foldl(fun apply_cc_event/2, Init, Events),
+            CC1 = nquic_cc:on_idle_reset(CC0),
+            Cwnd = nquic_cc:get_cwnd(CC0),
+            IW = nquic_cc_newreno:initial_window(nquic_cc:get_max_datagram_size(CC0)),
+            nquic_cc:get_cwnd(CC1) =:= max(Cwnd div 2, min(IW, Cwnd)) andalso
+                nquic_cc:get_ssthresh(CC1) =:= max(nquic_cc:get_ssthresh(CC0), (Cwnd * 3) div 4)
+        end
+    ).
+
+packet_kind_op() ->
+    oneof([
+        {send, oneof([stream, ack, padding, ack_padding]), int(50, 1500)},
+        {ack, int(0, 40), int(0, 5)}
+    ]).
+
+kind_frames(stream) ->
+    [#stream{stream_id = 0, offset = 0, length = 0, data = <<>>}];
+kind_frames(ack) ->
+    [#ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0}];
+kind_frames(padding) ->
+    [#padding{}];
+kind_frames(ack_padding) ->
+    [#ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0}, #padding{}].
+
+rfc_in_flight(Frames) ->
+    lists:any(
+        fun
+            (#ack{}) -> false;
+            (#connection_close{}) -> false;
+            (_) -> true
+        end,
+        Frames
+    ).
+
+rfc_bytes_in_flight(State) ->
+    lists:sum([
+        Size
+     || #sent_packet{size = Size, frames = Frames} <- nquic_loss:get_sent_packets(State),
+        rfc_in_flight(Frames)
+    ]).
+
+apply_kind_op({send, Kind, Size}, {State, Kinds, PN, Now}) ->
+    State1 = nquic_loss:on_packet_sent(State, application, PN, kind_frames(Kind), Now, Size),
+    {{State1, Kinds#{PN => Kind}, PN + 1, Now + 1000}, true};
+apply_kind_op({ack, Lo, _}, {_, _, PN, _} = Acc) when Lo >= PN ->
+    {Acc, true};
+apply_kind_op({ack, Lo, Len}, {State, Kinds, PN, Now}) ->
+    Hi = min(Lo + Len, PN - 1),
+    {ok, State1, _, _} = nquic_loss:on_ack_received(State, application, [{Lo, Hi}], 0, Now, 0),
+    Removed = [
+        K
+     || #sent_packet{packet_number = P} <- nquic_loss:get_sent_packets(State),
+        not lists:keymember(P, #sent_packet.packet_number, nquic_loss:get_sent_packets(State1)),
+        K <- [maps:get(P, Kinds)]
+    ],
+    Ranged = [maps:get(P, Kinds) || P <- lists:seq(Lo, Hi)],
+    CwndKept =
+        case lists:all(fun(K) -> K =:= ack end, Removed ++ Ranged) of
+            true -> nquic_loss:get_cwnd(State1) =:= nquic_loss:get_cwnd(State);
+            false -> true
+        end,
+    {{State1, Kinds, PN, Now + 1000}, CwndKept}.
+
+prop_ack_only_not_in_flight() ->
+    ?FORALL(Ops, list(packet_kind_op()),
+        begin
+            {_, Checks} = lists:foldl(
+                fun(Op, {Acc, Results}) ->
+                    {{State1, _, _, _} = Next, CwndKept} = apply_kind_op(Op, Acc),
+                    InFlightOk = nquic_loss:get_bytes_in_flight(State1) =:= rfc_bytes_in_flight(State1),
+                    {Next, [InFlightOk andalso CwndKept | Results]}
+                end,
+                {{nquic_loss:init(), #{}, 0, 1000}, []},
+                Ops
+            ),
+            lists:all(fun(Ok) -> Ok end, Checks)
+        end).
+
+loss_bound_op() ->
+    oneof([
+        {send, int(0, 400_000)},
+        {ack, int(0, 40), int(0, 5), int(0, 400_000)}
+    ]).
+
+apply_loss_bound_op({send, Gap}, {State, PN, Now}) ->
+    Frames = [#stream{stream_id = PN, offset = 0, length = 0, data = <<>>}],
+    State1 = nquic_loss:on_packet_sent(State, application, PN, Frames, Now, 1200),
+    {{State1, PN + 1, Now + Gap}, true};
+apply_loss_bound_op({ack, Lo, _, _}, {_, PN, _} = Acc) when Lo >= PN ->
+    {Acc, true};
+apply_loss_bound_op({ack, Lo, Len, Gap}, {State, PN, Now}) ->
+    Hi = min(Lo + Len, PN - 1),
+    {ok, State1, _, Lost} = nquic_loss:on_ack_received(State, application, [{Lo, Hi}], 0, Now, 0),
+    Largest = nquic_loss:get_largest_acked(State1, application),
+    {{State1, PN, Now + Gap}, lists:all(fun(#stream{stream_id = Id}) -> Id =< Largest end, Lost)}.
+
+prop_no_loss_above_largest_acked() ->
+    ?FORALL(Ops, list(loss_bound_op()),
+        begin
+            {_, Checks} = lists:foldl(
+                fun(Op, {Acc, Results}) ->
+                    {Next, Ok} = apply_loss_bound_op(Op, Acc),
+                    {Next, [Ok | Results]}
+                end,
+                {{nquic_loss:init(), 0, 0}, []},
+                Ops
+            ),
+            lists:all(fun(Ok) -> Ok end, Checks)
         end).

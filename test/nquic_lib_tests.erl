@@ -477,6 +477,26 @@ recv_batch_processes_quic_timeout_message_test() ->
     socket:close(Socket),
     flush_mailbox().
 
+recv_batch_processes_timeout_behind_packet_test() ->
+    flush_mailbox(),
+    {ok, Socket} = nquic_socket:open(0, #{}),
+    Ctx = nquic_ctx:set_socket(make_ctx(), Socket),
+    self() ! {packet, ?PEER, <<16#c0, 0, 0, 0, 1, 0:8, 0:8, 0:64>>},
+    self() ! {quic_timeout, pto},
+    {ok, _, Ctx1} = nquic_lib:recv_batch(Ctx, 100),
+    ?assertEqual(1, pto_count(Ctx1)),
+    socket:close(Socket),
+    flush_mailbox().
+
+recv_batch_dispatched_processes_timeout_behind_packet_test() ->
+    flush_mailbox(),
+    Ctx = nquic_ctx:set_dispatch(make_ctx(), nquic_dispatch:new(2)),
+    self() ! {packet, ?PEER, <<16#c0, 0, 0, 0, 1, 0:8, 0:8, 0:64>>},
+    self() ! {quic_timeout, pto},
+    {ok, _, Ctx1} = nquic_lib:recv_batch(Ctx, 100),
+    ?assertEqual(1, pto_count(Ctx1)),
+    flush_mailbox().
+
 recv_batch_after_timeout_returns_empty_test() ->
     flush_mailbox(),
     {ok, Socket} = nquic_socket:open(0, #{}),
@@ -748,7 +768,7 @@ recv_batch_connected_drains_quic_timeout_test() ->
     self() ! {packet, ?PEER, Garbage},
     self() ! {quic_timeout, idle},
     Result = nquic_lib:recv_batch(Ctx, 100),
-    ?assertMatch({ok, _Events, _Ctx1}, Result),
+    ?assertMatch({error, {transport_error, idle_timeout}, _}, Result),
     socket:close(Socket),
     flush_mailbox().
 
@@ -773,7 +793,7 @@ recv_batch_dispatched_drains_quic_timeout_test() ->
     self() ! {packet, ?PEER, Garbage},
     self() ! {quic_timeout, idle},
     Result = nquic_lib:recv_batch(Ctx0, 100),
-    ?assertMatch({ok, _Events, _Ctx1}, Result),
+    ?assertMatch({error, {transport_error, idle_timeout}, _}, Result),
     flush_mailbox().
 
 drain_stale_socket_msg_via_recv_batch_test() ->
@@ -883,6 +903,9 @@ make_ctx_with_state(State) ->
         nquic_ctx:new(State, undefined, ?PEER, undefined),
         1024
     ).
+
+pto_count(Ctx) ->
+    nquic_loss:get_pto_count((nquic_lib:ctx_state(Ctx))#conn_state.loss_state).
 
 flush_mailbox() ->
     receive

@@ -45,15 +45,16 @@ ensure_handshake_timers({stop, _, _} = Stop) ->
     Stop.
 
 -doc """
-Handle a PTO firing in the initial / handshake states.
-Queues the probes of `nquic_protocol_send:queue_handshake_probes/2`,
-flushes, and restarts the PTO timer. The established state delegates
-PTO to `nquic_protocol:handle_timeout/2` instead.
+Handle the loss detection timer in the initial / handshake states.
+Services it with `nquic_protocol_send:handle_handshake_timer/2`, which
+retransmits the packets lost at the loss time or queues the PTO probes,
+then flushes and restarts the timer. The established state delegates
+the timer to `nquic_protocol:handle_timeout/2` instead.
 """.
 -spec handle_pto(initial | handshake, #conn_state{}) ->
     gen_statem:event_handler_result(term()).
 handle_pto(StateName, Data) ->
-    Data1 = nquic_protocol_send:queue_handshake_probes(StateName, Data),
+    Data1 = nquic_protocol_send:handle_handshake_timer(StateName, Data),
     {Data2, _Timers} = nquic_conn_statem:flush_and_send(Data1),
     {keep_state, Data2, set_pto_timer(Data2)}.
 

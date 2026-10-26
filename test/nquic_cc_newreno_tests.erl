@@ -47,14 +47,14 @@ spurious_congestion_restores_cwnd_test() ->
     S1 = nquic_cc_newreno:on_congestion_event(S0, 1200, Cwnd0, SentTime),
     ?assert(nquic_cc_newreno:get_cwnd(S1) < Cwnd0),
 
-    S2 = nquic_cc_newreno:on_spurious_congestion(S1),
+    S2 = nquic_cc_newreno:on_spurious_congestion(S1, 1200),
     ?assertEqual(Cwnd0, nquic_cc_newreno:get_cwnd(S2)),
     ?assertEqual(Ssthresh0, nquic_cc_newreno:get_ssthresh(S2)).
 
 spurious_congestion_no_op_without_snapshot_test() ->
     S0 = nquic_cc_newreno:init(),
     Cwnd0 = nquic_cc_newreno:get_cwnd(S0),
-    S1 = nquic_cc_newreno:on_spurious_congestion(S0),
+    S1 = nquic_cc_newreno:on_spurious_congestion(S0, 1200),
     ?assertEqual(Cwnd0, nquic_cc_newreno:get_cwnd(S1)).
 
 spurious_snapshot_cleared_when_cwnd_grows_past_test() ->
@@ -76,5 +76,5 @@ spurious_snapshot_cleared_when_cwnd_grows_past_test() ->
         lists:seq(1, 20)
     ),
     ?assert(nquic_cc_newreno:get_cwnd(SGrown) >= Cwnd0),
-    SAfter = nquic_cc_newreno:on_spurious_congestion(SGrown),
+    SAfter = nquic_cc_newreno:on_spurious_congestion(SGrown, 1200),
     ?assertEqual(nquic_cc_newreno:get_cwnd(SGrown), nquic_cc_newreno:get_cwnd(SAfter)).

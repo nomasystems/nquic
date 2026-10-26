@@ -141,7 +141,7 @@ take_lost_packet_threshold_test() ->
         nquic_pn_buf:new(),
         lists:seq(1, 10)
     ),
-    {Lost, Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 4, 0, 1000),
+    {Lost, Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 7, 4, 0, 1000),
     ?assertEqual([1, 2, 3, 4], [P#sent_packet.packet_number || P <- Lost]),
     ?assertEqual([5, 6, 7, 8, 9, 10], nquic_pn_buf:keys(Buf1)),
     ?assertEqual(1050, NextT).
@@ -152,7 +152,7 @@ take_lost_time_threshold_test() ->
         nquic_pn_buf:new(),
         lists:seq(1, 10)
     ),
-    {Lost, Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 0, 35, 100),
+    {Lost, Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 10, 0, 35, 100),
     ?assertEqual([1, 2, 3], [P#sent_packet.packet_number || P <- Lost]),
     ?assertEqual(140, NextT),
     ?assertEqual([4, 5, 6, 7, 8, 9, 10], nquic_pn_buf:keys(Buf1)).
@@ -163,7 +163,7 @@ take_lost_all_lost_test() ->
         nquic_pn_buf:new(),
         lists:seq(1, 5)
     ),
-    {Lost, Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 100, 1_000_000, 100),
+    {Lost, Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 100, 100, 1_000_000, 100),
     ?assertEqual(5, length(Lost)),
     ?assertEqual(undefined, NextT),
     ?assert(nquic_pn_buf:is_empty(Buf1)).
@@ -174,9 +174,31 @@ take_lost_none_lost_test() ->
         nquic_pn_buf:new(),
         lists:seq(1, 5)
     ),
-    {Lost, _Buf1, NextT} = nquic_pn_buf:take_lost(Buf, -1, -1, 100),
+    {Lost, _Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 2, -1, -1, 100),
     ?assertEqual([], Lost),
     ?assertEqual(110, NextT).
+
+take_lost_stops_above_largest_acked_test() ->
+    Buf = lists:foldl(
+        fun(PN, A) -> nquic_pn_buf:insert(PN, mk(PN), A) end,
+        nquic_pn_buf:new(),
+        lists:seq(1, 10)
+    ),
+    {Lost, Buf1, NextT} = nquic_pn_buf:take_lost(Buf, 5, 2, 1_000_000, 100),
+    ?assertEqual([1, 2, 3, 4, 5], [P#sent_packet.packet_number || P <- Lost]),
+    ?assertEqual([6, 7, 8, 9, 10], nquic_pn_buf:keys(Buf1)),
+    ?assertEqual(undefined, NextT).
+
+take_lost_hint_skips_packets_not_in_flight_test() ->
+    AckOnly = fun(PN) -> (mk(PN))#sent_packet{ack_eliciting = false, in_flight = false} end,
+    Front = nquic_pn_buf:from_list([{PN, AckOnly(PN)} || PN <- [1, 2, 3]]),
+    Buf = lists:foldl(
+        fun(PN, A) -> nquic_pn_buf:insert(PN, mk(PN), A) end,
+        nquic_pn_buf:insert(4, AckOnly(4), Front),
+        [5, 6]
+    ),
+    ?assertMatch({[], _, 150}, nquic_pn_buf:take_lost(Buf, 6, 0, 0, 100)),
+    ?assertMatch({[], _, undefined}, nquic_pn_buf:take_lost(Buf, 4, 0, 0, 100)).
 
 take_lost_straddles_front_back_test() ->
     Buf0 = lists:foldl(
@@ -190,7 +212,7 @@ take_lost_straddles_front_back_test() ->
         Buf1,
         [4, 5, 6]
     ),
-    {Lost, Buf3, _NextT} = nquic_pn_buf:take_lost(Buf2, 4, 0, 100),
+    {Lost, Buf3, _NextT} = nquic_pn_buf:take_lost(Buf2, 7, 4, 0, 100),
     ?assertEqual([1, 2, 3, 4], [P#sent_packet.packet_number || P <- Lost]),
     ?assertEqual([5, 6], nquic_pn_buf:keys(Buf3)).
 

@@ -37,7 +37,7 @@ amortised across the full traversal.
     lookup/2,
     new/0,
     size/1,
-    take_lost/4,
+    take_lost/5,
     take_older_than/2,
     take_range/3,
     to_list/1,
@@ -69,21 +69,22 @@ build_residual(KeptF, KeptB, RestB) ->
     non_neg_integer(),
     [{nquic_packet_number:t(), nquic_loss:sent_packet()}],
     non_neg_integer(),
+    nquic_packet_number:t(),
     integer(),
     integer(),
     pos_integer(),
     buf()
 ) -> {[nquic_loss:sent_packet()], buf(), non_neg_integer() | undefined}.
-consume_back_for_lost(LostF, MCF, [], N, _PThresh, _TCutoff, _LossDelay, Buf) ->
+consume_back_for_lost(LostF, MCF, [], N, _Largest, _PThresh, _TCutoff, _LossDelay, Buf) ->
     {lists:reverse(LostF), Buf#buf{front = [], size = N - MCF}, undefined};
-consume_back_for_lost(LostF, MCF, B, N, PThresh, TCutoff, LossDelay, Buf) ->
+consume_back_for_lost(LostF, MCF, B, N, Largest, PThresh, TCutoff, LossDelay, Buf) ->
     BackAsc = lists:reverse(B),
-    {LostB, RestB, NextLossTime, MCB} = scan_lost(BackAsc, PThresh, TCutoff, LossDelay, [], 0),
+    {LostB, RestB, MCB} = scan_lost(BackAsc, Largest, PThresh, TCutoff, [], 0),
     Lost = lists:reverse(LostF, lists:reverse(LostB)),
-    NewFront =
+    {NewFront, NextLossTime} =
         case RestB of
-            exhausted -> [];
-            _ -> RestB
+            exhausted -> {[], undefined};
+            _ -> {RestB, exact_loss_time(next_loss_time(RestB, Largest, LossDelay))}
         end,
     {Lost, Buf#buf{front = NewFront, back = [], size = N - MCF - MCB}, NextLossTime}.
 
@@ -267,30 +268,49 @@ scan_back_desc(Low, High, [{_PN, V} | Rest], NewerAsc, MatchedAsc, MC) ->
 
 -spec scan_lost(
     [{nquic_packet_number:t(), nquic_loss:sent_packet()}],
+    nquic_packet_number:t(),
     integer(),
     integer(),
-    pos_integer(),
     [nquic_loss:sent_packet()],
     non_neg_integer()
 ) ->
     {
         [nquic_loss:sent_packet()],
         [{nquic_packet_number:t(), nquic_loss:sent_packet()}] | exhausted,
-        non_neg_integer() | undefined,
         non_neg_integer()
     }.
-scan_lost([], _PThresh, _TCutoff, _LossDelay, LostRev, MC) ->
-    {LostRev, exhausted, undefined, MC};
+scan_lost([], _Largest, _PThresh, _TCutoff, LostRev, MC) ->
+    {LostRev, exhausted, MC};
 scan_lost(
-    [{PN, #sent_packet{time_sent = TS} = Pkt} | Rest], PThresh, TCutoff, LossDelay, LostRev, MC
+    [{PN, #sent_packet{time_sent = TS} = Pkt} | Rest], Largest, PThresh, TCutoff, LostRev, MC
 ) when
-    PN =< PThresh; TS =< TCutoff
+    PN =< Largest, (PN =< PThresh orelse TS =< TCutoff)
 ->
-    scan_lost(Rest, PThresh, TCutoff, LossDelay, [Pkt | LostRev], MC + 1);
-scan_lost(
-    [{_PN, #sent_packet{time_sent = TS}} | _] = All, _PThresh, _TCutoff, LossDelay, LostRev, MC
-) ->
-    {LostRev, All, TS + LossDelay, MC}.
+    scan_lost(Rest, Largest, PThresh, TCutoff, [Pkt | LostRev], MC + 1);
+scan_lost(All, _Largest, _PThresh, _TCutoff, LostRev, MC) ->
+    {LostRev, All, MC}.
+
+-spec next_loss_time(
+    [{nquic_packet_number:t(), nquic_loss:sent_packet()}],
+    nquic_packet_number:t(),
+    pos_integer()
+) -> non_neg_integer() | undefined | exhausted.
+next_loss_time([], _Largest, _LossDelay) ->
+    exhausted;
+next_loss_time([{PN, _} | _], Largest, _LossDelay) when PN > Largest ->
+    undefined;
+next_loss_time(
+    [{_PN, #sent_packet{in_flight = true, time_sent = TS}} | _], _Largest, LossDelay
+) when
+    is_integer(TS), is_integer(LossDelay)
+->
+    TS + LossDelay;
+next_loss_time([_ | Rest], Largest, LossDelay) ->
+    next_loss_time(Rest, Largest, LossDelay).
+
+-spec exact_loss_time(non_neg_integer() | undefined | exhausted) -> non_neg_integer() | undefined.
+exact_loss_time(exhausted) -> undefined;
+exact_loss_time(Time) -> Time.
 
 -spec scan_older(
     [{nquic_packet_number:t(), nquic_loss:sent_packet()}],
@@ -317,22 +337,31 @@ scan_older(All, _Cutoff, OldRev, MC) ->
 size(#buf{size = N}) -> N.
 
 -doc """
-Take all entries that satisfy the RFC 9002 §6.1 loss conditions
-(`PN =< PThresh` OR `time_sent =< TCutoff`). Returns the lost
-packets in PN-ascending order, the residual buffer, and the
-NextLossTime hint (the first not-lost packet's
-`time_sent + LossDelay`, or `undefined` if every packet was lost).
+Take all entries at or below `Largest` that satisfy the RFC 9002 §6.1
+loss conditions (`PN =< PThresh` OR `time_sent =< TCutoff`). An entry
+above `Largest` is never lost. Returns the lost packets in PN-ascending
+order, the residual buffer, and the NextLossTime hint (the first
+in-flight packet's `time_sent + LossDelay` when it is at or below
+`Largest`, else `undefined`). A packet that is not in flight, such as an
+ACK-only packet, does not set the hint: its loss has no effect.
 Stops at the first packet that fails both conditions. PN order
 equals time-sent order on monotonic clock + monotonic PN, so all
 suffix entries are also not lost; early-stop is safe.
 """.
--spec take_lost(buf(), integer(), integer(), pos_integer()) ->
+-spec take_lost(buf(), nquic_packet_number:t(), integer(), integer(), pos_integer()) ->
     {[nquic_loss:sent_packet()], buf(), non_neg_integer() | undefined}.
-take_lost(#buf{front = F, back = B, size = N} = Buf, PThresh, TCutoff, LossDelay) ->
-    case scan_lost(F, PThresh, TCutoff, LossDelay, [], 0) of
-        {LostF, exhausted, _, MC} ->
-            consume_back_for_lost(LostF, MC, B, N, PThresh, TCutoff, LossDelay, Buf);
-        {LostF, RestF, NextLossTime, MC} ->
+take_lost(#buf{front = F, back = B, size = N} = Buf, Largest, PThresh, TCutoff, LossDelay) ->
+    case scan_lost(F, Largest, PThresh, TCutoff, [], 0) of
+        {LostF, exhausted, MC} ->
+            consume_back_for_lost(LostF, MC, B, N, Largest, PThresh, TCutoff, LossDelay, Buf);
+        {LostF, RestF, MC} ->
+            NextLossTime =
+                case next_loss_time(RestF, Largest, LossDelay) of
+                    exhausted ->
+                        exact_loss_time(next_loss_time(lists:reverse(B), Largest, LossDelay));
+                    Time ->
+                        Time
+                end,
             {lists:reverse(LostF), Buf#buf{front = RestF, size = N - MC}, NextLossTime}
     end.
 

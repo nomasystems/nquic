@@ -18,7 +18,7 @@
 ]).
 
 -spec batch_drain_loop_connected(nquic:ctx(), [nquic_protocol:event()]) ->
-    {ok, [nquic_protocol:event()], nquic:ctx()}.
+    {ok, [nquic_protocol:event()], nquic:ctx()} | {error, term(), nquic:ctx()}.
 batch_drain_loop_connected(Ctx, EventsAcc) ->
     Socket = nquic_ctx:socket(Ctx),
     receive
@@ -43,8 +43,8 @@ batch_drain_loop_connected(Ctx, EventsAcc) ->
         {packet_batch, Source, Buf, GsoSize, ECN} ->
             {Ctx1, EventsAcc1} = drain_packet_batch(Ctx, Source, Buf, GsoSize, ECN, EventsAcc),
             batch_drain_loop_connected(Ctx1, EventsAcc1);
-        {quic_timeout, _Type} ->
-            batch_finish(Ctx, EventsAcc)
+        {quic_timeout, Type} ->
+            batch_timeout(Ctx, Type, EventsAcc)
     after 0 ->
         case nquic_lib_socket:socket_recv_for_ctx(Socket) of
             {ok, Source, Buf, undefined} ->
@@ -70,7 +70,7 @@ batch_drain_loop_connected(Ctx, EventsAcc) ->
     end.
 
 -spec batch_drain_loop_dispatched(nquic:ctx(), [nquic_protocol:event()]) ->
-    {ok, [nquic_protocol:event()], nquic:ctx()}.
+    {ok, [nquic_protocol:event()], nquic:ctx()} | {error, term(), nquic:ctx()}.
 batch_drain_loop_dispatched(Ctx, EventsAcc) ->
     receive
         {packet, Source, PacketBin, ECN} ->
@@ -94,10 +94,18 @@ batch_drain_loop_dispatched(Ctx, EventsAcc) ->
         {packet_batch, Source, Buf, GsoSize, ECN} ->
             {Ctx1, EventsAcc1} = drain_packet_batch(Ctx, Source, Buf, GsoSize, ECN, EventsAcc),
             batch_drain_loop_dispatched(Ctx1, EventsAcc1);
-        {quic_timeout, _Type} ->
-            batch_finish(Ctx, EventsAcc)
+        {quic_timeout, Type} ->
+            batch_timeout(Ctx, Type, EventsAcc)
     after 0 ->
         batch_finish(Ctx, EventsAcc)
+    end.
+
+-spec batch_timeout(nquic:ctx(), nquic_protocol:timer_type(), [nquic_protocol:event()]) ->
+    {ok, [nquic_protocol:event()], nquic:ctx()} | {error, term(), nquic:ctx()}.
+batch_timeout(Ctx, Type, EventsAcc) ->
+    case nquic_lib:timeout(Ctx, Type) of
+        {ok, Events, Ctx1} -> batch_finish(Ctx1, lists:reverse(Events, EventsAcc));
+        {error, _Reason, _Ctx1} = Error -> Error
     end.
 
 -spec batch_finish(nquic:ctx(), [nquic_protocol:event()]) ->
@@ -124,7 +132,7 @@ batch_first_packet(Ctx, Source, PacketBin) ->
     pos_integer(),
     nquic_socket:ecn_mark(),
     connected | dispatched
-) -> {ok, [nquic_protocol:event()], nquic:ctx()}.
+) -> {ok, [nquic_protocol:event()], nquic:ctx()} | {error, term(), nquic:ctx()}.
 batch_first_packet_batch(Ctx, Source, Buf, GsoSize, ECN, Mode) ->
     {Ctx1, EventsAcc} = drain_packet_batch(Ctx, Source, Buf, GsoSize, ECN, []),
     case Mode of

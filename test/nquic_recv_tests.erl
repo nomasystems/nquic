@@ -9,7 +9,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(DEFAULT_RECBUF, 2 * 1024 * 1024).
+-define(DEFAULT_RECBUF, 4 * 1024 * 1024).
 -define(DEFAULT_SNDBUF, 2 * 1024 * 1024).
 
 socket_options_default_test() ->

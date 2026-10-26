@@ -1,12 +1,16 @@
 -module(nquic_cc_cubic).
 
 -moduledoc """
-CUBIC congestion control per RFC 8312.
+CUBIC congestion control per RFC 9438.
 
 CUBIC uses a cubic function for window growth during congestion avoidance,
 achieving better bandwidth utilization on high-BDP paths than NewReno while
-remaining TCP-friendly. Includes fast convergence (Section 4.6) and a
-TCP-friendly region (Section 4.2) where W_est tracks standard TCP growth.
+remaining TCP-friendly. Includes fast convergence (Section 4.7) and a
+Reno-friendly region (Section 4.3) where W_est tracks standard TCP growth.
+
+The window does not grow while the sender is application limited
+(Section 5.8, RFC 9002 §7.8), and the elapsed time of the cubic curve
+excludes those periods (Section 4.2).
 """.
 
 -behaviour(nquic_cc).
@@ -23,17 +27,33 @@ TCP-friendly region (Section 4.2) where W_est tracks standard TCP growth.
     on_packet_acked/4,
     on_packet_sent/3,
     on_persistent_congestion/1,
-    on_spurious_congestion/1
+    on_spurious_congestion/2
 ]).
 -export([get_max_datagram_size/1, set_max_datagram_size/2]).
--export([cbrt/1, cubic_window/3]).
+-export([cbrt/1, cubic_epoch/3, cubic_window/3]).
 -export([hystart_phase/1]).
+
+-type snapshot() :: {
+    non_neg_integer(),
+    non_neg_integer(),
+    integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    undefined | float(),
+    boolean()
+}.
 
 -define(C, 0.4).
 -define(BETA_CUBIC, 0.7).
 -define(ALPHA_CUBIC, (3.0 * (1.0 - ?BETA_CUBIC) / (1.0 + ?BETA_CUBIC))).
 -define(INFINITY_SSTHRESH, 16#FFFFFFFFFFFFFFFF).
 -define(NO_RECOVERY, -576460752303423488).
+-define(MAX_TARGET_GROWTH, 1.5).
+-define(CWND_LIMITED_SLACK_SEGMENTS, 3).
+-define(SLOW_START_LIMITED_DIVISOR, 2).
 
 -define(HYSTART_RTT_SAMPLE_COUNT, 8).
 -define(HYSTART_MIN_RTT_THRESH_US, 4_000).
@@ -55,20 +75,7 @@ TCP-friendly region (Section 4.2) where W_est tracks standard TCP growth.
     tcp_cwnd = 0 :: non_neg_integer(),
     cubic_k = undefined :: undefined | float(),
     congestion_occurred = false :: boolean(),
-    prev_state ::
-        undefined
-        | {
-            non_neg_integer(),
-            non_neg_integer(),
-            integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            non_neg_integer(),
-            undefined | float(),
-            boolean()
-        },
+    prev_state :: undefined | snapshot(),
     hystart_phase = standard ::
         standard | slow_start | css | done,
     last_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
@@ -76,8 +83,17 @@ TCP-friendly region (Section 4.2) where W_est tracks standard TCP growth.
     rtt_sample_count = 0 :: non_neg_integer(),
     last_round_largest_pn = 0 :: non_neg_integer(),
     css_baseline_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
-    css_round_count = 0 :: non_neg_integer()
+    css_round_count = 0 :: non_neg_integer(),
+    undo_bytes = 0 :: non_neg_integer(),
+    app_limited_since :: integer() | undefined,
+    sent_in_flight = 0 :: non_neg_integer()
 }).
+
+-spec add_undo_bytes(#state{}, non_neg_integer()) -> #state{}.
+add_undo_bytes(#state{prev_state = undefined} = State, _LostBytes) ->
+    State;
+add_undo_bytes(#state{undo_bytes = Undo} = State, LostBytes) ->
+    State#state{undo_bytes = Undo + LostBytes}.
 
 -spec cbrt(float()) -> float().
 cbrt(+0.0) -> 0.0;
@@ -89,10 +105,19 @@ clamp_rtt_thresh(T) when T < ?HYSTART_MIN_RTT_THRESH_US -> ?HYSTART_MIN_RTT_THRE
 clamp_rtt_thresh(T) when T > ?HYSTART_MAX_RTT_THRESH_US -> ?HYSTART_MAX_RTT_THRESH_US;
 clamp_rtt_thresh(T) -> T.
 
--spec compute_k(non_neg_integer(), pos_integer()) -> float().
-compute_k(WMax, MSS) ->
-    WMaxSeg = WMax / MSS,
-    cbrt(WMaxSeg * (1.0 - ?BETA_CUBIC) / ?C).
+-doc """
+The cubic curve of a congestion avoidance stage that starts at a window of
+`CwndEpoch` bytes: `K` in seconds and the origin point in bytes, where the
+curve is flat (RFC 9438 §4.2). When `WMax` is at or below `CwndEpoch`,
+`K` is 0 and the origin point is `CwndEpoch` (RFC 9438 §4.10). The curve
+starts at `CwndEpoch` in both cases.
+""".
+-spec cubic_epoch(non_neg_integer(), non_neg_integer(), pos_integer()) ->
+    {float(), non_neg_integer()}.
+cubic_epoch(WMax, CwndEpoch, MSS) when WMax > CwndEpoch ->
+    {cbrt((WMax - CwndEpoch) / MSS / ?C), WMax};
+cubic_epoch(_WMax, CwndEpoch, _MSS) ->
+    {0.0, CwndEpoch}.
 
 -spec cubic_update(#state{}, non_neg_integer(), map()) -> #state{}.
 cubic_update(State0, AckedBytes, RTTStats) ->
@@ -116,7 +141,8 @@ cubic_update(State0, AckedBytes, RTTStats) ->
                         0 -> Cwnd;
                         _ -> WMax0
                     end,
-                {Now, NewWMax, Cwnd, NewWMax, compute_k(NewWMax, MSS)};
+                {K, Origin} = cubic_epoch(NewWMax, Cwnd, MSS),
+                {Now, Origin, Cwnd, NewWMax, K};
             _ ->
                 {EpochStart0, OriginPoint0, TcpCwnd0, WMax0, CubicK0}
         end,
@@ -133,7 +159,7 @@ cubic_update(State0, AckedBytes, RTTStats) ->
 
     SRTT_us = maps:get(smoothed_rtt, RTTStats, 0),
 
-    WCubic = cubic_window_k(T_us + SRTT_us, WMax, MSS, CubicK),
+    WCubic = cubic_window_k(T_us + SRTT_us, OriginPoint, MSS, CubicK),
 
     NewTcpCwnd =
         case TcpCwnd of
@@ -149,9 +175,10 @@ cubic_update(State0, AckedBytes, RTTStats) ->
             true ->
                 NewTcpCwnd;
             false ->
-                case WCubic > Cwnd of
+                Target = min(WCubic, trunc(?MAX_TARGET_GROWTH * Cwnd)),
+                case Target > Cwnd of
                     true ->
-                        Inc = (WCubic - Cwnd) * MSS div Cwnd,
+                        Inc = (Target - Cwnd) * MSS div Cwnd,
                         Cwnd + max(1, Inc);
                     false ->
                         Cwnd
@@ -160,9 +187,14 @@ cubic_update(State0, AckedBytes, RTTStats) ->
 
     State1#state{cwnd = NewCwnd, tcp_cwnd = NewTcpCwnd}.
 
+-doc """
+The cubic window in bytes `T_us` microseconds into a congestion avoidance
+stage that starts after a reduction from `WMax`, that is at
+`cwnd_epoch = beta_cubic * WMax` (RFC 9438 §4.2).
+""".
 -spec cubic_window(non_neg_integer(), non_neg_integer(), pos_integer()) -> non_neg_integer().
 cubic_window(T_us, WMax, MSS) ->
-    cubic_window_k(T_us, WMax, MSS, compute_k(WMax, MSS)).
+    cubic_window_k(T_us, WMax, MSS, cbrt(WMax / MSS * (1.0 - ?BETA_CUBIC) / ?C)).
 
 -spec cubic_window_k(non_neg_integer(), non_neg_integer(), pos_integer(), float()) ->
     non_neg_integer().
@@ -309,6 +341,20 @@ init(Opts) ->
 initial_window(MSS) ->
     erlang:floor(erlang:min(10 * MSS, erlang:max(14720, 2 * MSS))).
 
+-spec is_cwnd_limited(slow_start | congestion_avoidance, non_neg_integer(), #state{}) ->
+    boolean().
+is_cwnd_limited(Phase, AckInFlight, #state{sent_in_flight = SentInFlight} = State) ->
+    is_window_full(Phase, max(AckInFlight, SentInFlight), State).
+
+-spec is_window_full(slow_start | congestion_avoidance, non_neg_integer(), #state{}) ->
+    boolean().
+is_window_full(slow_start, BytesInFlight, #state{cwnd = Cwnd}) when
+    BytesInFlight > Cwnd div ?SLOW_START_LIMITED_DIVISOR
+->
+    true;
+is_window_full(_Phase, BytesInFlight, #state{cwnd = Cwnd, max_datagram_size = MSS}) ->
+    BytesInFlight + ?CWND_LIMITED_SLACK_SEGMENTS * MSS >= Cwnd.
+
 -spec maybe_clear_prev_state(#state{}) -> #state{}.
 maybe_clear_prev_state(#state{prev_state = undefined} = S) ->
     S;
@@ -319,10 +365,15 @@ maybe_clear_prev_state(#state{cwnd = Cwnd, prev_state = Snap} = S) ->
         false -> S
     end.
 
--doc "Reduce the congestion window on a loss event.".
+-doc """
+Reduce the congestion window on a loss event. A loss of packets sent
+before the start of the recovery period does not reduce the window again.
+Its bytes count toward the rollback of the current reduction
+(`on_spurious_congestion/2`).
+""".
 -spec on_congestion_event(#state{}, non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
     #state{}.
-on_congestion_event(State, _LostBytes, _BytesInFlight, SentTime) ->
+on_congestion_event(State, LostBytes, _BytesInFlight, SentTime) ->
     #state{
         cwnd = Cwnd,
         ssthresh = OldSsthresh,
@@ -338,7 +389,7 @@ on_congestion_event(State, _LostBytes, _BytesInFlight, SentTime) ->
     } = State,
     case SentTime =< RecoveryStart of
         true ->
-            State;
+            add_undo_bytes(State, LostBytes);
         false ->
             Now = erlang:monotonic_time(microsecond),
             MinWindow = 2 * MSS,
@@ -363,37 +414,52 @@ on_congestion_event(State, _LostBytes, _BytesInFlight, SentTime) ->
                 congestion_occurred = true,
                 prev_state =
                     {Cwnd, OldSsthresh, RecoveryStart, OldWMax, OldWLastMax, OldEpochStart,
-                        OldOriginPoint, OldTcpCwnd, OldCubicK, OldCongOcc}
+                        OldOriginPoint, OldTcpCwnd, OldCubicK, OldCongOcc},
+                undo_bytes = LostBytes,
+                app_limited_since = undefined
             }
     end.
 
 -doc """
-Reset CUBIC state to the initial window after an idle period (RFC 9002
-Section 7.8). All recovery/epoch bookkeeping is cleared so the next
-acked packet starts a fresh slow-start phase.
+Restart the window after one restart timeout of idle time (RFC 9002
+§7.8, RFC 5681 §4.1). The window halves, but not below the initial
+window. `ssthresh` becomes at least 3/4 of the old window, so the
+slow start after the idle period ends near the old operating point.
+`w_max` stays. The epoch, the recovery period and the rollback snapshot
+are cleared.
 """.
 -spec on_idle_reset(#state{}) -> #state{}.
-on_idle_reset(#state{max_datagram_size = MSS} = State) ->
+on_idle_reset(#state{cwnd = Cwnd, ssthresh = Ssthresh, max_datagram_size = MSS} = State) ->
     State#state{
-        cwnd = initial_window(MSS),
-        ssthresh = ?INFINITY_SSTHRESH,
+        cwnd = max(Cwnd div 2, min(initial_window(MSS), Cwnd)),
+        ssthresh = max(Ssthresh, (Cwnd * 3) div 4),
         recovery_start_time = ?NO_RECOVERY,
-        w_max = 0,
-        w_last_max = 0,
         epoch_start = 0,
         origin_point = 0,
         tcp_cwnd = 0,
         cubic_k = undefined,
-        congestion_occurred = false,
-        prev_state = undefined
+        prev_state = undefined,
+        undo_bytes = 0,
+        app_limited_since = undefined
     }.
 
--doc "Grow the congestion window when a packet is acknowledged.".
+-doc """
+Grow the congestion window when a packet is acknowledged.
+
+`BytesInFlight` is the number of bytes in flight before the ACK. The
+window grows only when the sender is congestion window limited: the
+larger of `BytesInFlight` and the bytes in flight after the last send is
+within three segments of the window, or above half the window in slow
+start. The owner processes a batch of ACK frames before it sends again,
+so the value after the last send keeps the later frames of a batch
+cwnd-limited. Otherwise the sender is application limited and the window
+stays (RFC 9438 §5.8, RFC 9002 §7.8).
+""".
 -spec on_packet_acked(#state{}, #sent_packet{}, non_neg_integer(), map()) -> #state{}.
 on_packet_acked(
     State,
     #sent_packet{time_sent = SentTime, packet_number = PN, size = AckedBytes},
-    _BytesInFlight,
+    BytesInFlight,
     RTTStats
 ) ->
     #state{
@@ -406,15 +472,29 @@ on_packet_acked(
             State;
         false when Cwnd < Ssthresh ->
             State1 = hystart_observe(State, PN, RTTStats),
-            slow_start_grow(State1, AckedBytes);
+            case is_cwnd_limited(slow_start, BytesInFlight, State1) of
+                true -> slow_start_grow(State1, AckedBytes);
+                false -> State1
+            end;
         false ->
-            maybe_clear_prev_state(cubic_update(State, AckedBytes, RTTStats))
+            case is_cwnd_limited(congestion_avoidance, BytesInFlight, State) of
+                true ->
+                    maybe_clear_prev_state(
+                        cubic_update(resume_epoch(State), AckedBytes, RTTStats)
+                    );
+                false ->
+                    pause_epoch(State)
+            end
     end.
 
--doc "Handle a sent packet (no-op for CUBIC).".
+-doc """
+Record the bytes in flight after a send. An ACK uses the larger of this
+value and its own bytes in flight to decide whether the sender is
+congestion window limited.
+""".
 -spec on_packet_sent(#state{}, non_neg_integer(), non_neg_integer()) -> #state{}.
-on_packet_sent(State, _BytesSent, _BytesInFlight) ->
-    State.
+on_packet_sent(State, _BytesSent, BytesInFlight) ->
+    State#state{sent_in_flight = BytesInFlight}.
 
 -doc """
 Collapse the congestion window to the minimum (`2 * max_datagram_size`)
@@ -442,13 +522,19 @@ on_persistent_congestion(State) ->
     }.
 
 -doc """
-Roll back the most recent congestion-event reduction (RFC 9002 Appendix
-A.10). No-op when no rollback snapshot is available.
+Roll back the most recent congestion-event reduction when the bytes
+declared lost since the reduction were all acknowledged later (RFC 9438
+§4.9.2). `SpuriousBytes` is the size of the packets acknowledged after
+they were declared lost. No-op when no rollback snapshot is available.
 """.
--spec on_spurious_congestion(#state{}) -> #state{}.
-on_spurious_congestion(#state{prev_state = undefined} = State) ->
+-spec on_spurious_congestion(#state{}, non_neg_integer()) -> #state{}.
+on_spurious_congestion(#state{prev_state = undefined} = State, _SpuriousBytes) ->
     State;
-on_spurious_congestion(#state{prev_state = Snap} = State) ->
+on_spurious_congestion(#state{undo_bytes = Undo} = State, SpuriousBytes) when
+    SpuriousBytes < Undo
+->
+    State#state{undo_bytes = Undo - SpuriousBytes};
+on_spurious_congestion(#state{prev_state = Snap} = State, _SpuriousBytes) ->
     {Cwnd, Ssthresh, RST, WMax, WLastMax, EpochStart, OriginPoint, TcpCwnd, CubicK, CongOcc} =
         Snap,
     State#state{
@@ -462,32 +548,65 @@ on_spurious_congestion(#state{prev_state = Snap} = State) ->
         tcp_cwnd = TcpCwnd,
         cubic_k = CubicK,
         congestion_occurred = CongOcc,
-        prev_state = undefined
+        prev_state = undefined,
+        undo_bytes = 0
     }.
 
--doc "Set the maximum datagram size, recalculating cwnd if still at initial window.".
+-spec pause_epoch(#state{}) -> #state{}.
+pause_epoch(#state{epoch_start = EpochStart, app_limited_since = undefined} = State) when
+    EpochStart =/= 0
+->
+    State#state{app_limited_since = erlang:monotonic_time(microsecond)};
+pause_epoch(State) ->
+    State.
+
+-spec reset_epoch(#state{}) -> #state{}.
+reset_epoch(#state{prev_state = Snap} = State) ->
+    State#state{
+        epoch_start = 0,
+        origin_point = 0,
+        tcp_cwnd = 0,
+        cubic_k = undefined,
+        prev_state = reset_snapshot_epoch(Snap)
+    }.
+
+-spec reset_snapshot_epoch(undefined | snapshot()) -> undefined | snapshot().
+reset_snapshot_epoch(undefined) ->
+    undefined;
+reset_snapshot_epoch({Cwnd, Ssthresh, RST, WMax, WLastMax, _, _, _, _, CongOcc}) ->
+    {Cwnd, Ssthresh, RST, WMax, WLastMax, 0, 0, 0, undefined, CongOcc}.
+
+-spec resume_epoch(#state{}) -> #state{}.
+resume_epoch(#state{app_limited_since = undefined} = State) ->
+    State;
+resume_epoch(#state{epoch_start = 0} = State) ->
+    State#state{app_limited_since = undefined};
+resume_epoch(#state{epoch_start = EpochStart, app_limited_since = Since} = State) ->
+    State#state{
+        epoch_start = EpochStart + erlang:monotonic_time(microsecond) - Since,
+        app_limited_since = undefined
+    }.
+
+-doc """
+Set the maximum datagram size. Before the first congestion event a
+window still at the initial window follows the new size.
+
+A change of size ends the current CUBIC epoch, also in the spurious-loss
+snapshot. The next ACK in congestion avoidance starts a new epoch and
+computes K from `w_max` and the new size.
+""".
 -spec set_max_datagram_size(#state{}, pos_integer()) -> #state{}.
+set_max_datagram_size(#state{max_datagram_size = Size} = State, Size) ->
+    State;
 set_max_datagram_size(State, Size) when Size >= 1200 ->
-    #state{congestion_occurred = CongOccurred, max_datagram_size = OldMSS} = State,
-    NewCubicK =
-        case Size =:= OldMSS of
-            true -> State#state.cubic_k;
-            false -> undefined
+    #state{congestion_occurred = CongOccurred, max_datagram_size = OldMSS, cwnd = OldCwnd} =
+        State,
+    NewCwnd =
+        case not CongOccurred andalso OldCwnd =:= initial_window(OldMSS) of
+            true -> initial_window(Size);
+            false -> OldCwnd
         end,
-    case CongOccurred of
-        false ->
-            OldInitial = initial_window(OldMSS),
-            NewInitial = initial_window(Size),
-            OldCwnd = State#state.cwnd,
-            NewCwnd =
-                case OldCwnd =:= OldInitial of
-                    true -> NewInitial;
-                    false -> OldCwnd
-                end,
-            State#state{max_datagram_size = Size, cwnd = NewCwnd, cubic_k = NewCubicK};
-        true ->
-            State#state{max_datagram_size = Size, cubic_k = NewCubicK}
-    end.
+    reset_epoch(State#state{max_datagram_size = Size, cwnd = NewCwnd}).
 
 -spec slow_start_grow(#state{}, non_neg_integer()) -> #state{}.
 slow_start_grow(#state{hystart_phase = css, max_datagram_size = MSS} = State, AckedBytes) ->

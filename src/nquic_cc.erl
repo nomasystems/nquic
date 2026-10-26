@@ -17,7 +17,7 @@ Currently ships with `nquic_cc_newreno`.
 ) ->
     dynamic().
 -callback on_persistent_congestion(dynamic()) -> dynamic().
--callback on_spurious_congestion(dynamic()) -> dynamic().
+-callback on_spurious_congestion(dynamic(), non_neg_integer()) -> dynamic().
 -callback on_idle_reset(dynamic()) -> dynamic().
 -callback get_cwnd(dynamic()) -> non_neg_integer().
 -callback get_ssthresh(dynamic()) -> non_neg_integer() | undefined.
@@ -31,7 +31,7 @@ Currently ships with `nquic_cc_newreno`.
     on_packet_acked/4,
     on_packet_sent/3,
     on_persistent_congestion/1,
-    on_spurious_congestion/1,
+    on_spurious_congestion/2,
     on_idle_reset/1
 ]).
 -export([get_max_datagram_size/1, set_max_datagram_size/2]).
@@ -91,15 +91,21 @@ on_congestion_event({Mod, State}, LostBytes, BytesInFlight, SentTime) ->
     {Mod, Mod:on_congestion_event(State, LostBytes, BytesInFlight, SentTime)}.
 
 -doc """
-Reset the congestion controller after an idle period (RFC 9002 Section
-7.8). The window collapses to the initial window so the sender does not
-burst beyond the path's available capacity after a long pause.
+Restart the congestion controller after one restart timeout of idle
+time (RFC 9002 §7.8, RFC 5681 §4.1). The window halves, but not below
+the initial window, and `ssthresh` becomes at least 3/4 of the old
+window. `nquic_loss` calls it once for each restart timeout of the idle
+period.
 """.
 -spec on_idle_reset(cc_state()) -> cc_state().
 on_idle_reset({Mod, State}) ->
     {Mod, Mod:on_idle_reset(State)}.
 
--doc "Notify the congestion controller that a packet was acknowledged.".
+-doc """
+Notify the congestion controller that a packet was acknowledged.
+`BytesInFlight` is the number of bytes in flight before the ACK frame, the
+same for every packet that the frame acknowledges.
+""".
 -spec on_packet_acked(cc_state(), #sent_packet{}, non_neg_integer(), map()) -> cc_state().
 on_packet_acked({Mod, State}, Packet, BytesInFlight, RTTStats) ->
     {Mod, Mod:on_packet_acked(State, Packet, BytesInFlight, RTTStats)}.
@@ -119,15 +125,14 @@ on_persistent_congestion({Mod, State}) ->
     {Mod, Mod:on_persistent_congestion(State)}.
 
 -doc """
-Notify the congestion controller that the most recent congestion-event
-reduction was triggered by a spurious loss (RFC 9002 Appendix A.10).
-Implementations should restore the pre-reduction snapshot of the window
-state. If no snapshot is available (no rollback pending), this is a
-no-op.
+Notify the congestion controller that `SpuriousBytes` of in-flight
+packets declared lost were acknowledged later (RFC 9438 §4.9.2). The
+controller decides whether the most recent reduction was spurious and
+restores its snapshot. Without a snapshot, the call has no effect.
 """.
--spec on_spurious_congestion(cc_state()) -> cc_state().
-on_spurious_congestion({Mod, State}) ->
-    {Mod, Mod:on_spurious_congestion(State)}.
+-spec on_spurious_congestion(cc_state(), non_neg_integer()) -> cc_state().
+on_spurious_congestion({Mod, State}, SpuriousBytes) ->
+    {Mod, Mod:on_spurious_congestion(State, SpuriousBytes)}.
 
 -doc "Set the maximum datagram size for congestion window calculations.".
 -spec set_max_datagram_size({module(), dynamic()}, pos_integer()) -> {module(), dynamic()}.

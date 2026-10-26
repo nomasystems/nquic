@@ -14,6 +14,7 @@ module-qualified.
 
 -include("nquic_conn.hrl").
 -include("nquic_frame.hrl").
+-include("nquic_transport.hrl").
 -export([
     apply_received_ranges_prune/3,
     build_ack_for_space/2,
@@ -62,7 +63,7 @@ apply_received_ranges_prune(Space, AckedFrames, State) ->
     end.
 
 -spec build_ack_for_space(nquic_packet:space(), nquic_protocol:state()) -> {ok, #ack{}} | none.
-build_ack_for_space(Space, #conn_state{pn_spaces = PnSpaces}) ->
+build_ack_for_space(Space, #conn_state{pn_spaces = PnSpaces} = State) ->
     SpaceMap = maps:get(Space, PnSpaces, #{}),
     Ranges = maps:get(received_ranges, SpaceMap, []),
     case Ranges of
@@ -72,7 +73,7 @@ build_ack_for_space(Space, #conn_state{pn_spaces = PnSpaces}) ->
             ECN = ecn_counts_from_space(SpaceMap),
             {ok, #ack{
                 largest_acknowledged = Largest,
-                delay = 0,
+                delay = ack_delay(Space, State),
                 first_ack_range = FirstAckRange,
                 ack_ranges = AckRanges,
                 ecn_counts = ECN
@@ -81,11 +82,20 @@ build_ack_for_space(Space, #conn_state{pn_spaces = PnSpaces}) ->
             none
     end.
 
--spec bump_app_ack(non_neg_integer(), nquic_protocol:state()) -> nquic_protocol:state().
-bump_app_ack(Count, State) when Count >= 2 ->
-    force_queue_ack(application, State#conn_state{pending_ack_count = 0});
-bump_app_ack(Count, State) ->
-    State#conn_state{pending_ack_count = Count}.
+-doc """
+The ACK Delay field of an ACK frame sent now: the time since the largest
+packet number was received, scaled by the local `ack_delay_exponent`
+(RFC 9000 §13.2.5, §19.3). ACK frames in Initial and Handshake packets
+carry 0, because the peer does not use their delay (RFC 9000 §19.3).
+""".
+-spec ack_delay(nquic_packet:space(), nquic_protocol:state()) -> non_neg_integer().
+ack_delay(application, #conn_state{
+    app_largest_received_us = ReceivedUs,
+    local_params = #transport_params{ack_delay_exponent = Exponent}
+}) when is_integer(ReceivedUs) ->
+    (erlang:monotonic_time(microsecond) - ReceivedUs) bsr Exponent;
+ack_delay(_Space, _State) ->
+    0.
 
 -spec ecn_counts_from_space(map()) ->
     {non_neg_integer(), non_neg_integer(), non_neg_integer()} | undefined.
@@ -180,7 +190,7 @@ queue_ack_for_space(initial, State) ->
 queue_ack_for_space(handshake, State) ->
     queue_handshake_ack(build_ack_for_space(handshake, State), State);
 queue_ack_for_space(application, #conn_state{pending_ack_count = Count} = State) ->
-    bump_app_ack(Count + 1, State).
+    State#conn_state{pending_ack_count = Count + 1}.
 
 -spec queue_ack_if_eliciting(boolean(), nquic_packet:header(), nquic_protocol:state()) ->
     nquic_protocol:state().
@@ -221,6 +231,20 @@ ranges_to_ack_ranges(PrevLow, [{High, Low} | Rest]) ->
     Length = High - Low,
     [#ack_range{gap = Gap, length = Length} | ranges_to_ack_ranges(Low, Rest)].
 
+-spec track_app_largest(
+    nquic_packet_number:t(), #{nquic_packet:space() => map()}, nquic_protocol:state()
+) -> nquic_protocol:state().
+track_app_largest(PN, PnSpaces, #conn_state{app_largest_received = Largest} = State) when
+    PN > Largest
+->
+    State#conn_state{
+        app_largest_received = PN,
+        app_largest_received_us = erlang:monotonic_time(microsecond),
+        pn_spaces = PnSpaces
+    };
+track_app_largest(_PN, PnSpaces, State) ->
+    State#conn_state{pn_spaces = PnSpaces}.
+
 -doc "Increment the per-space ECN counter for the given mark.".
 -spec track_ecn_mark(nquic_packet:space(), nquic_socket:ecn_mark(), nquic_protocol:state()) ->
     nquic_protocol:state().
@@ -241,10 +265,7 @@ track_received_pn(application, PN, State) ->
     Ranges = maps:get(received_ranges, SpaceMap, []),
     NewRanges = insert_pn_range(PN, Ranges),
     NewSpaceMap = SpaceMap#{received_ranges => NewRanges},
-    State#conn_state{
-        app_largest_received = max(PN, State#conn_state.app_largest_received),
-        pn_spaces = PnSpaces#{application => NewSpaceMap}
-    };
+    track_app_largest(PN, PnSpaces#{application => NewSpaceMap}, State);
 track_received_pn(Space, PN, State) ->
     #conn_state{pn_spaces = PnSpaces} = State,
     SpaceMap = maps:get(Space, PnSpaces, #{next_pn => 0}),
@@ -281,10 +302,7 @@ track_received_pn_and_ecn(application, PN, ECN, #conn_state{pn_spaces = PnSpaces
                 Old = maps:get(Key, SpaceMap1, 0),
                 SpaceMap1#{Key => Old + 1}
         end,
-    State#conn_state{
-        app_largest_received = max(PN, State#conn_state.app_largest_received),
-        pn_spaces = PnSpaces#{application => NewSpaceMap}
-    };
+    track_app_largest(PN, PnSpaces#{application => NewSpaceMap}, State);
 track_received_pn_and_ecn(Space, PN, ECN, #conn_state{pn_spaces = PnSpaces} = State) ->
     SpaceMap = maps:get(Space, PnSpaces, #{next_pn => 0}),
     LargestReceived = maps:get(largest_received, SpaceMap, -1),

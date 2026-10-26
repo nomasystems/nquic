@@ -34,6 +34,8 @@ builders module-qualified; the dependency is one-way.
     build_packets_mtu_pre_ctx/5,
     build_zero_rtt_packet_pre/3,
     make_app_send_ctx/2,
+    max_datagram_size/1,
+    packet_overhead/1,
     packet_payload_budget/1
 ]).
 
@@ -56,7 +58,14 @@ builders module-qualified; the dependency is one-way.
     hp_sample/3
 ]).
 
--export([handle_lost_frames/3, queue_handshake_probes/2]).
+-export([
+    handle_handshake_timer/2,
+    handle_loss_timeout/2,
+    handle_lost_frames/3,
+    peer_max_ack_delay_us/1,
+    queue_app_probe/1,
+    queue_handshake_probes/2
+]).
 
 -export([
     take_frames_for_mtu_pre/2
@@ -66,6 +75,8 @@ builders module-qualified; the dependency is one-way.
 
 -type pre_encoded() :: {non_neg_integer(), iodata(), nquic_frame:t()}.
 -define(AEAD_TAG_SIZE, 16).
+-define(MIN_UDP_PAYLOAD_SIZE, 1200).
+-define(DEFAULT_MAX_ACK_DELAY_US, 25_000).
 
 -record(app_send_ctx, {
     cipher :: aes_128_gcm | aes_256_gcm | chacha20_poly1305,
@@ -276,13 +287,39 @@ batch_frames([F | Rest], Budget, Used, Cur, Batches) ->
 handshake_payload_budget(#conn_state{
     dcid = DCID, scid = SCID, remote_params = RP
 }) ->
-    PeerMax =
-        case RP of
-            #transport_params{max_udp_payload_size = M} when is_integer(M), M >= 1200 -> M;
-            _ -> 1200
-        end,
+    PeerMax = peer_max_udp_payload_size(RP),
     Overhead = 1 + 4 + 1 + byte_size(DCID) + 1 + byte_size(SCID) + 2 + 4 + ?AEAD_TAG_SIZE,
     PeerMax - Overhead.
+
+-doc """
+Largest UDP payload this endpoint sends on the path:
+`min(max_payload_size, peer max_udp_payload_size)`, never below 1200
+bytes. This is the maximum datagram size of the congestion controller
+(RFC 9002 §7.2). The peer `max_udp_payload_size` is a receive limit,
+not a path MTU (RFC 9000 §18.2), so it only bounds the value.
+""".
+-spec max_datagram_size(nquic_protocol:state()) -> pos_integer().
+max_datagram_size(#conn_state{max_payload_size = Local, remote_params = RP}) ->
+    max(?MIN_UDP_PAYLOAD_SIZE, min(Local, peer_max_udp_payload_size(RP))).
+
+-doc """
+Get the `max_ack_delay` of the peer in microseconds. Before the transport
+parameters of the peer arrive, the value is the 25 ms default of
+RFC 9000 §18.2.
+""".
+-spec peer_max_ack_delay_us(#transport_params{} | undefined) -> non_neg_integer().
+peer_max_ack_delay_us(#transport_params{max_ack_delay = MaxAckDelayMs}) ->
+    MaxAckDelayMs * 1000;
+peer_max_ack_delay_us(undefined) ->
+    ?DEFAULT_MAX_ACK_DELAY_US.
+
+-spec peer_max_udp_payload_size(nquic_transport:params() | undefined) -> pos_integer().
+peer_max_udp_payload_size(#transport_params{max_udp_payload_size = M}) when
+    is_integer(M), M >= ?MIN_UDP_PAYLOAD_SIZE
+->
+    M;
+peer_max_udp_payload_size(_) ->
+    ?MIN_UDP_PAYLOAD_SIZE.
 
 -spec presplit_crypto_frames([nquic_frame:t()], pos_integer()) -> [nquic_frame:t()].
 presplit_crypto_frames(Frames, Budget) ->
@@ -705,10 +742,17 @@ make_app_send_ctx(State, Time) ->
         track_anti_amp = Track
     }.
 
+-doc """
+Upper bound of the bytes that a 1-RTT packet adds to its payload: the
+short header with a 4-byte packet number and the AEAD tag.
+""".
+-spec packet_overhead(nquic_protocol:state()) -> pos_integer().
+packet_overhead(#conn_state{dcid = DCID}) ->
+    1 + byte_size(DCID) + 4 + 16.
+
 -spec packet_payload_budget(nquic_protocol:state()) -> pos_integer().
-packet_payload_budget(#conn_state{dcid = DCID, max_payload_size = MaxPayload}) ->
-    Overhead = 1 + byte_size(DCID) + 4 + 16,
-    MaxPayload - Overhead.
+packet_payload_budget(#conn_state{max_payload_size = MaxPayload} = State) ->
+    MaxPayload - packet_overhead(State).
 
 -spec take_frames_for_mtu_pre([pre_encoded()], pos_integer()) ->
     {[pre_encoded()], [pre_encoded()]}.
@@ -985,6 +1029,34 @@ pad_bin() ->
 %%%-----------------------------------------------------------------------------
 %% LOSS DETECTION / RETRANSMISSION (RFC 9002 6 2)
 %%%-----------------------------------------------------------------------------
+-doc """
+Service the loss detection timer before the handshake completes
+(RFC 9002 Appendix A.10). A pending loss time runs
+`handle_loss_timeout/2`. Otherwise the timer is a PTO, and
+`queue_handshake_probes/2` queues the probes.
+""".
+-spec handle_handshake_timer(initial | handshake, nquic_protocol:state()) ->
+    nquic_protocol:state().
+handle_handshake_timer(Phase, #conn_state{loss_state = LS} = State) ->
+    case nquic_loss:get_loss_timer(LS) of
+        {_, Space} -> handle_loss_timeout(Space, State);
+        undefined -> queue_handshake_probes(Phase, State)
+    end.
+
+-doc """
+Service the loss time of `Space` (RFC 9002 Appendix A.10). The frames
+of the packets that the time threshold declares lost are queued again
+by `handle_lost_frames/3`. When the congestion window decreases, one
+packet can exceed it (RFC 9002 §7.3.2).
+""".
+-spec handle_loss_timeout(nquic_packet:space(), nquic_protocol:state()) -> nquic_protocol:state().
+handle_loss_timeout(Space, #conn_state{loss_state = LS, remote_params = RP} = State) ->
+    {ok, LS1, LostFrames} = nquic_loss:detect_loss(
+        LS, Space, erlang:monotonic_time(microsecond), peer_max_ack_delay_us(RP)
+    ),
+    State1 = nquic_protocol_send_queues:enter_recovery(LS, State#conn_state{loss_state = LS1}),
+    handle_lost_frames(LostFrames, Space, State1).
+
 -spec handle_lost_frames([nquic_frame:t()], nquic_packet:space(), nquic_protocol:state()) ->
     nquic_protocol:state().
 handle_lost_frames([], _Space, State) ->
@@ -992,6 +1064,16 @@ handle_lost_frames([], _Space, State) ->
 handle_lost_frames([Frame | Rest], Space, State) ->
     State1 = retransmit_frame(Frame, Space, State),
     handle_lost_frames(Rest, Space, State1).
+
+-spec has_data_frame([nquic_frame:t()]) -> boolean().
+has_data_frame([]) -> false;
+has_data_frame([#stream{} | _]) -> true;
+has_data_frame([#datagram{} | _]) -> true;
+has_data_frame([_ | Rest]) -> has_data_frame(Rest).
+
+-spec has_new_app_data(#conn_flow{}) -> boolean().
+has_new_app_data(#conn_flow{pending_app_pre_encoded = [_ | _]}) -> true;
+has_new_app_data(#conn_flow{pending_app_frames = Frames}) -> has_data_frame(Frames).
 
 -spec fallback_probe_space(initial | handshake, nquic_keys:key_map()) -> initial | handshake.
 fallback_probe_space(Phase, Keys) ->
@@ -1050,6 +1132,37 @@ queue_handshake_probes(
         {InitialFrames, HandshakeFrames} ->
             State2 = queue_space_probe(initial, InitialFrames, State1),
             queue_space_probe(handshake, HandshakeFrames, State2)
+    end.
+
+-doc """
+Queue the content of a 1-RTT PTO probe (RFC 9002 §6.2.4). Queued STREAM
+or DATAGRAM data is new data, and the probe carries it. Otherwise the
+frames of the oldest ack-eliciting packet in flight that still carries
+retransmittable data are queued again, as `handle_lost_frames/3` does.
+When no packet in flight carries such data, the probe is a PING.
+""".
+-spec queue_app_probe(nquic_protocol:state()) -> nquic_protocol:state().
+queue_app_probe(#conn_state{flow = Flow, loss_state = LS} = State) ->
+    case has_new_app_data(Flow) of
+        true ->
+            State;
+        false ->
+            queue_oldest_unacked(
+                nquic_loss:get_ack_eliciting_frames_by_packet(LS, application), State
+            )
+    end.
+
+-spec queue_oldest_unacked([[nquic_frame:t()]], nquic_protocol:state()) ->
+    nquic_protocol:state().
+queue_oldest_unacked([], State) ->
+    {ok, State1} = nquic_protocol_send_queues:queue_app_frame(#ping{}, State),
+    State1;
+queue_oldest_unacked([Frames | Rest], #conn_state{flow = Flow} = State) ->
+    Pending = Flow#conn_flow.pending_app_frames,
+    State1 = handle_lost_frames(Frames, application, State),
+    case (State1#conn_state.flow)#conn_flow.pending_app_frames of
+        Pending -> queue_oldest_unacked(Rest, State1);
+        _ -> State1
     end.
 
 -spec queue_probe_frames(initial | handshake, [nquic_frame:t()], nquic_protocol:state()) ->
@@ -1115,6 +1228,9 @@ retransmit_frame(#max_streams{is_uni = IsUni, max_streams = Lost}, _Space, State
     retransmit_max_streams(IsUni, Lost, State);
 retransmit_frame(#streams_blocked{is_uni = IsUni, limit = Limit}, _Space, State) ->
     retransmit_streams_blocked(IsUni, Limit, State);
+retransmit_frame(#handshake_done{} = Frame, application, State) ->
+    {ok, State1} = nquic_protocol_send_queues:queue_app_frame(Frame, State),
+    State1;
 retransmit_frame(_, _Space, State) ->
     State.
 

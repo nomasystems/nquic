@@ -179,6 +179,52 @@ packet_threshold_loss_test() ->
     LostIds = lists:sort([Sid || #stream{stream_id = Sid} <- Lost]),
     ?assertEqual([1, 2], LostIds).
 
+no_loss_above_largest_acked_test() ->
+    Frames = fun(N) -> [#stream{stream_id = N, offset = 0, length = 0, data = <<>>}] end,
+    Size = 1200,
+    State0 = nquic_loss:on_packet_sent(nquic_loss:init(), application, 0, Frames(0), 0, Size),
+    State1 = nquic_loss:on_packet_sent(State0, application, 1, Frames(1), 0, Size),
+    {ok, State2, _, []} = nquic_loss:on_ack_received(
+        State1, application, [{1, 1}], 0, 0, 25_000
+    ),
+    State3 = nquic_loss:on_packet_sent(State2, application, 2, Frames(2), 10_000, Size),
+    {ok, State4, _, Lost} = nquic_loss:on_ack_received(
+        State3, application, [{0, 1}], 0, 500_000, 25_000
+    ),
+    ?assertEqual([], Lost),
+    ?assertEqual([2], [
+        PN
+     || #sent_packet{packet_number = PN} <- nquic_loss:get_sent_packets(State4)
+    ]).
+
+rtt_sample_when_largest_acked_is_ack_only_test() ->
+    Stream = [#stream{stream_id = 0, offset = 0, length = 0, data = <<>>}],
+    AckOnly = [#ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0}],
+    State0 = nquic_loss:on_packet_sent(nquic_loss:init(), application, 0, Stream, 1000, 1200),
+    State1 = nquic_loss:on_packet_sent(State0, application, 1, AckOnly, 2000, 50),
+    {ok, State2, _, _} = nquic_loss:on_ack_received(
+        State1, application, [{0, 1}], 0, 5000, 25_000
+    ),
+    ?assertEqual(3000, maps:get(latest_rtt, nquic_loss:get_rtt_stats(State2))).
+
+no_rtt_sample_when_only_ack_only_packets_acked_test() ->
+    AckOnly = [#ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0}],
+    State0 = nquic_loss:on_packet_sent(nquic_loss:init(), application, 0, AckOnly, 1000, 50),
+    {ok, State1, _, _} = nquic_loss:on_ack_received(
+        State0, application, [{0, 0}], 0, 5000, 25_000
+    ),
+    ?assertEqual(0, maps:get(latest_rtt, nquic_loss:get_rtt_stats(State1))).
+
+ack_only_packet_does_not_arm_loss_timer_test() ->
+    AckOnly = [#ack{largest_acknowledged = 0, delay = 0, first_ack_range = 0}],
+    Stream = [#stream{stream_id = 0, offset = 0, length = 0, data = <<>>}],
+    State0 = nquic_loss:on_packet_sent(nquic_loss:init(), application, 0, AckOnly, 1000, 50),
+    State1 = nquic_loss:on_packet_sent(State0, application, 1, Stream, 1000, 1200),
+    {ok, State2, _, []} = nquic_loss:on_ack_received(
+        State1, application, [{1, 1}], 0, 2000, 25_000
+    ),
+    ?assertEqual(undefined, nquic_loss:get_loss_timer(State2)).
+
 persistent_congestion_collapses_cwnd_test() ->
     MSS = 1200,
     Frames = fun(N) -> [#stream{stream_id = N, offset = 0, length = 0, data = <<>>}] end,
@@ -251,6 +297,38 @@ spurious_loss_rolls_back_cwnd_test() ->
     ),
     ?assert(nquic_loss:get_cwnd(State8) >= Cwnd0).
 
+cubic_rollback_waits_for_every_lost_packet_test() ->
+    MSS = 1200,
+    Frames = fun(N) -> [#stream{stream_id = N, offset = 0, length = 0, data = <<>>}] end,
+
+    State0 = nquic_loss:init(cubic),
+    State1 = nquic_loss:on_packet_sent(State0, application, 1, Frames(1), 0, MSS),
+    {ok, State2, _, _} = nquic_loss:on_ack_received(
+        State1, application, [{1, 1}], 0, 10_000, 25_000
+    ),
+    Cwnd0 = nquic_loss:get_cwnd(State2),
+
+    State3 = lists:foldl(
+        fun(PN, S) -> nquic_loss:on_packet_sent(S, application, PN, Frames(PN), 20_000, MSS) end,
+        State2,
+        lists:seq(2, 6)
+    ),
+    {ok, State4, _, Lost} = nquic_loss:on_ack_received(
+        State3, application, [{6, 6}], 0, 30_000, 25_000
+    ),
+    ?assertEqual(2, length(Lost)),
+    CwndReduced = nquic_loss:get_cwnd(State4),
+    ?assert(CwndReduced < Cwnd0),
+
+    {ok, State5, _, _} = nquic_loss:on_ack_received(
+        State4, application, [{2, 2}], 0, 35_000, 25_000
+    ),
+    ?assertEqual(CwndReduced, nquic_loss:get_cwnd(State5)),
+    {ok, State6, _, _} = nquic_loss:on_ack_received(
+        State5, application, [{3, 3}], 0, 36_000, 25_000
+    ),
+    ?assertEqual(Cwnd0, nquic_loss:get_cwnd(State6)).
+
 idle_reset_collapses_cwnd_to_initial_test() ->
     MSS = 1200,
     Frames = fun(N) -> [#stream{stream_id = N, offset = 0, length = 0, data = <<>>}] end,
@@ -269,6 +347,26 @@ idle_reset_collapses_cwnd_to_initial_test() ->
 
     State5 = nquic_loss:on_packet_sent(State4, application, 3, Frames(3), 100_000, MSS),
     ?assertEqual(nquic_cc_newreno:initial_window(MSS), nquic_loss:get_cwnd(State5)).
+
+idle_restart_halves_cwnd_per_restart_timeout_test() ->
+    MSS = 1200,
+    Frames = fun(N) -> [#stream{stream_id = N, offset = 0, length = 0, data = <<>>}] end,
+    State0 = lists:foldl(
+        fun(PN, S) -> nquic_loss:on_packet_sent(S, application, PN, Frames(PN), 0, MSS) end,
+        nquic_loss:init(),
+        lists:seq(1, 20)
+    ),
+    {ok, State1, _, _} = nquic_loss:on_ack_received(
+        State0, application, [{1, 20}], 0, 10_000, 25_000
+    ),
+    Cwnd = nquic_loss:get_cwnd(State1),
+    ?assertEqual(0, nquic_loss:get_bytes_in_flight(State1)),
+    ?assert(Cwnd div 2 > nquic_cc_newreno:initial_window(MSS)),
+
+    Short = nquic_loss:on_packet_sent(State1, application, 21, Frames(21), 29_000, MSS),
+    ?assertEqual(Cwnd, nquic_loss:get_cwnd(Short)),
+    One = nquic_loss:on_packet_sent(State1, application, 21, Frames(21), 40_000, MSS),
+    ?assertEqual(Cwnd div 2, nquic_loss:get_cwnd(One)).
 
 idle_reset_skipped_when_in_flight_test() ->
     MSS = 1200,
@@ -442,7 +540,7 @@ pacer_check_blocks_when_next_send_time_in_future_test() ->
         in_flight = true,
         frames = []
     },
-    CCAcked = nquic_cc:on_packet_acked(CC, P, 0, #{
+    CCAcked = nquic_cc:on_packet_acked(CC, P, 8400, #{
         smoothed_rtt => 50_000,
         latest_rtt => 50_000,
         min_rtt => 50_000
@@ -537,8 +635,8 @@ ecn_lifecycle_test() ->
     ?assert(nquic_loss:is_ecn_enabled(S1)),
     S2 = nquic_loss:set_ecn_enabled(S1, false),
     ?assertNot(nquic_loss:is_ecn_enabled(S2)),
-    ?assertEqual(S1, nquic_loss:process_ecn_counts(S1, application, undefined)),
-    S3 = nquic_loss:process_ecn_counts(S1, application, {3, 0, 1}),
+    ?assertEqual(S1, nquic_loss:process_ecn_counts(S1, application, undefined, 0)),
+    S3 = nquic_loss:process_ecn_counts(S1, application, {3, 0, 1}, 0),
     ?assert(is_boolean(nquic_loss:is_ecn_socket_dirty(S3))),
     S4 = nquic_loss:clear_ecn_socket_dirty(S3),
     ?assertNot(nquic_loss:is_ecn_socket_dirty(S4)).

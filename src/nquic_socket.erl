@@ -57,7 +57,7 @@ handle_info({'$socket', Socket, select, _Info}, State) ->
 -type sockaddr() :: socket:sockaddr_in() | socket:sockaddr_in6().
 -type t() :: socket:socket().
 
--define(DEFAULT_RECBUF, 2 * 1024 * 1024).
+-define(DEFAULT_RECBUF, 4 * 1024 * 1024).
 -define(DEFAULT_SNDBUF, 2 * 1024 * 1024).
 
 -define(SOL_UDP, 17).
