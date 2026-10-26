@@ -1,12 +1,58 @@
+%%%-------------------------------------------------------------------
+%%% EUnit tests for {@link nquic_cc_cubic}.
+%%%
+%%% The `state' record and CUBIC macros mirror the source-of-truth
+%%% in `src/nquic_cc_cubic.erl'; if the production constants/layout
+%%% change, update the values below to keep the tests in sync.
+%%%-------------------------------------------------------------------
 -module(nquic_cc_cubic_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
--include("nquic_cc_cubic.hrl").
 -include("nquic_loss.hrl").
-
 -define(RFC9438_BETA_CUBIC, 0.7).
 -define(RFC9438_C, 0.4).
+-define(INFINITY_SSTHRESH, 16#FFFFFFFFFFFFFFFF).
+-define(NO_RECOVERY, -576460752303423488).
+
+-record(state, {
+    cwnd :: non_neg_integer(),
+    ssthresh = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    max_datagram_size = 1200 :: pos_integer(),
+    recovery_start_time = ?NO_RECOVERY :: integer(),
+    w_max = 0 :: non_neg_integer(),
+    w_last_max = 0 :: non_neg_integer(),
+    epoch_start = 0 :: non_neg_integer(),
+    origin_point = 0 :: non_neg_integer(),
+    tcp_cwnd = 0 :: non_neg_integer(),
+    cubic_k = undefined :: undefined | float(),
+    congestion_occurred = false :: boolean(),
+    prev_state ::
+        undefined
+        | {
+            non_neg_integer(),
+            non_neg_integer(),
+            integer(),
+            non_neg_integer(),
+            non_neg_integer(),
+            non_neg_integer(),
+            non_neg_integer(),
+            non_neg_integer(),
+            undefined | float(),
+            boolean()
+        },
+    hystart_phase = standard ::
+        standard | slow_start | css | done,
+    last_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    current_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    rtt_sample_count = 0 :: non_neg_integer(),
+    last_round_largest_pn = 0 :: non_neg_integer(),
+    css_baseline_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    css_round_count = 0 :: non_neg_integer(),
+    undo_bytes = 0 :: non_neg_integer(),
+    app_limited_since :: integer() | undefined,
+    sent_in_flight = 0 :: non_neg_integer()
+}).
 
 init_test() ->
     S = nquic_cc_cubic:init(),

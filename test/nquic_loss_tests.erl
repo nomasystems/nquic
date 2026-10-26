@@ -1,9 +1,49 @@
+%%%-------------------------------------------------------------------
+%%% EUnit tests for {@link nquic_loss}.
+%%%
+%%% The `loss_state' record is mirrored from the production module
+%%% (`src/nquic_loss.erl'); if its layout changes, update the copy
+%%% below to keep field-pattern tests in sync.
+%%%-------------------------------------------------------------------
 -module(nquic_loss_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
 -include("nquic_frame.hrl").
 -include("nquic_loss.hrl").
+-record(pacer_state, {
+    enabled = false :: boolean(),
+    factor = 1.25 :: number(),
+    burst_packets = 10 :: pos_integer(),
+    next_send_time :: undefined | integer()
+}).
+
+-record(loss_state, {
+    sent_packets = #{
+        initial => nquic_pn_buf:new(),
+        handshake => nquic_pn_buf:new(),
+        application => nquic_pn_buf:new()
+    } :: #{nquic_packet:space() => nquic_pn_buf:buf()},
+    largest_acked_packet = #{} :: #{nquic_packet:space() => nquic_packet_number:t()},
+    loss_time = #{} :: #{nquic_packet:space() => non_neg_integer()},
+    rtt_state :: nquic_rtt:rtt_state(),
+    cc_state :: term(),
+    bytes_in_flight = 0 :: non_neg_integer(),
+    pto_count = 0 :: non_neg_integer(),
+    ack_eliciting_in_flight = 0 :: non_neg_integer(),
+    first_rtt_sample :: non_neg_integer() | undefined,
+    last_send_time :: non_neg_integer() | undefined,
+    recently_lost = #{
+        initial => nquic_pn_buf:new(),
+        handshake => nquic_pn_buf:new(),
+        application => nquic_pn_buf:new()
+    } :: #{nquic_packet:space() => nquic_pn_buf:buf()},
+    peer_ecn_ce = #{} :: #{nquic_packet:space() => non_neg_integer()},
+    peer_ecn_total = #{} :: #{nquic_packet:space() => non_neg_integer()},
+    ecn_enabled = true :: boolean(),
+    ecn_socket_dirty = false :: boolean(),
+    pacer = #pacer_state{} :: #pacer_state{}
+}).
 
 init_test() ->
     State = nquic_loss:init(),

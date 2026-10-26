@@ -1,11 +1,28 @@
+%%%-------------------------------------------------------------------
+%%% EUnit tests for {@link nquic_pmtud}.
+%%%
+%%% Macros and the `pmtud' record mirror the source-of-truth in
+%%% `src/nquic_pmtud.erl'; if the production constants/layout change,
+%%% update the values here so the tests stay in sync.
+%%%-------------------------------------------------------------------
 -module(nquic_pmtud_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
--include("nquic_pmtud.hrl").
-
 -define(RFC9000_BASE_PLPMTU, 1200).
+-define(MAX_PLPMTU, 1452).
 -define(RFC8899_PMTU_RAISE_TIMER_MS, 600_000).
+
+-record(pmtud, {
+    state = disabled :: disabled | base | searching | search_complete | error,
+    current_mtu = ?RFC9000_BASE_PLPMTU :: pos_integer(),
+    probe_size = 0 :: non_neg_integer(),
+    probe_count = 0 :: non_neg_integer(),
+    search_low = ?RFC9000_BASE_PLPMTU :: pos_integer(),
+    search_high = ?MAX_PLPMTU :: pos_integer(),
+    probe_pending = false :: boolean(),
+    last_probe_time = 0 :: non_neg_integer()
+}).
 
 new_default_test() ->
     S = nquic_pmtud:new(),

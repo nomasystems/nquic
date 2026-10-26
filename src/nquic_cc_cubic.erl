@@ -15,8 +15,8 @@ excludes those periods (Section 4.2).
 
 -behaviour(nquic_cc).
 
--include("nquic_cc_cubic.hrl").
 -include("nquic_loss.hrl").
+-include("nquic_transport.hrl").
 -export([
     get_cwnd/1,
     get_ssthresh/1,
@@ -34,9 +34,24 @@ excludes those periods (Section 4.2).
 -export([cbrt/1, cubic_epoch/3, cubic_window/3]).
 -export([hystart_phase/1]).
 
+-type snapshot() :: {
+    non_neg_integer(),
+    non_neg_integer(),
+    integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    undefined | float(),
+    boolean()
+}.
+
 -define(C, 0.4).
 -define(BETA_CUBIC, 0.7).
 -define(ALPHA_CUBIC, (3.0 * (1.0 - ?BETA_CUBIC) / (1.0 + ?BETA_CUBIC))).
+-define(INFINITY_SSTHRESH, 16#FFFFFFFFFFFFFFFF).
+-define(NO_RECOVERY, -576460752303423488).
 -define(MAX_TARGET_GROWTH, 1.5).
 -define(CWND_LIMITED_SLACK_SEGMENTS, 3).
 -define(SLOW_START_LIMITED_DIVISOR, 2).
@@ -48,6 +63,32 @@ excludes those periods (Section 4.2).
 -define(HYSTART_CSS_GROWTH_DIVISOR, 4).
 -define(HYSTART_CSS_ROUNDS, 5).
 -define(HYSTART_CSS_L, 8).
+
+-record(state, {
+    cwnd :: non_neg_integer(),
+    ssthresh = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    max_datagram_size = ?MIN_UDP_PAYLOAD_SIZE :: pos_integer(),
+    recovery_start_time = ?NO_RECOVERY :: integer(),
+    w_max = 0 :: non_neg_integer(),
+    w_last_max = 0 :: non_neg_integer(),
+    epoch_start = 0 :: non_neg_integer(),
+    origin_point = 0 :: non_neg_integer(),
+    tcp_cwnd = 0 :: non_neg_integer(),
+    cubic_k = undefined :: undefined | float(),
+    congestion_occurred = false :: boolean(),
+    prev_state :: undefined | snapshot(),
+    hystart_phase = standard ::
+        standard | slow_start | css | done,
+    last_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    current_round_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    rtt_sample_count = 0 :: non_neg_integer(),
+    last_round_largest_pn = 0 :: non_neg_integer(),
+    css_baseline_min_rtt = ?INFINITY_SSTHRESH :: non_neg_integer(),
+    css_round_count = 0 :: non_neg_integer(),
+    undo_bytes = 0 :: non_neg_integer(),
+    app_limited_since :: integer() | undefined,
+    sent_in_flight = 0 :: non_neg_integer()
+}).
 
 -spec add_undo_bytes(#state{}, non_neg_integer()) -> #state{}.
 add_undo_bytes(#state{prev_state = undefined} = State, _LostBytes) ->

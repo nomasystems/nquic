@@ -11,7 +11,6 @@ spawned in a separate process (slow path).
 -behaviour(gen_server).
 
 -include("nquic_packet.hrl").
--include("nquic_receiver.hrl").
 -include("nquic_transport.hrl").
 -export([get_port/1, start_link/1]).
 -export([handle_call/3, handle_cast/2, handle_info/2, init/1, terminate/2]).
@@ -25,6 +24,22 @@ spawned in a separate process (slow path).
     maybe_retry/3,
     slow_dispatch/4
 ]).
+
+-record(state, {
+    socket :: nquic_socket:t(),
+    select_info :: nquic_socket:select_info() | undefined,
+    dispatch_table :: nquic_dispatch:t(),
+    listener :: pid(),
+    opts :: map(),
+    static_key :: binary(),
+    max_new_conns_per_sec = 0 :: non_neg_integer(),
+    rate_count = 0 :: non_neg_integer(),
+    rate_window_start = 0 :: integer(),
+    retry = false :: boolean(),
+    retry_token_lifetime = 30 :: pos_integer(),
+    ecn = false :: boolean(),
+    gro = false :: boolean()
+}).
 
 -doc "Return the port number this receiver's socket is bound to.".
 -spec get_port(pid()) -> {ok, inet:port_number()} | {error, nquic_error:any_reason()}.
