@@ -1,15 +1,5 @@
 -module(nquic_ctx).
 
-%% Opaque library-mode connection context.
-%%
-%% Owns the `#quic_ctx{}' record. The record is intentionally defined
-%% inside this module rather than in a header so no other module can
-%% pattern-match or update it directly: callers must go through the
-%% accessors and setters exported here.
-%%
-%% The opaque `t()' type is the externally visible handle. `nquic'
-%% re-exports it as `nquic:ctx()' for API ergonomics.
-
 -export([
     connected/1,
     datagram_buffer/1,

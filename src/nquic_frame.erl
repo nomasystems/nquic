@@ -13,29 +13,6 @@ iodata for zero-copy sending. Decoding uses inline varint macros
 
 -export_type([t/0]).
 
--type t() ::
-    #padding{}
-    | #ping{}
-    | #ack{}
-    | #reset_stream{}
-    | #stop_sending{}
-    | #crypto{}
-    | #new_token{}
-    | #stream{}
-    | #max_data{}
-    | #max_stream_data{}
-    | #max_streams{}
-    | #data_blocked{}
-    | #stream_data_blocked{}
-    | #streams_blocked{}
-    | #new_connection_id{}
-    | #retire_connection_id{}
-    | #path_challenge{}
-    | #path_response{}
-    | #connection_close{}
-    | #handshake_done{}
-    | #datagram{}.
-
 -define(DECODE_VARINT(Bin, Val, Rest),
     case Bin of
         <<0:2, Val:6, Rest/binary>> ->
@@ -63,6 +40,28 @@ iodata for zero-copy sending. Decoding uses inline varint macros
             {error, incomplete_binary}
     end
 ).
+-type t() ::
+    #padding{}
+    | #ping{}
+    | #ack{}
+    | #reset_stream{}
+    | #stop_sending{}
+    | #crypto{}
+    | #new_token{}
+    | #stream{}
+    | #max_data{}
+    | #max_stream_data{}
+    | #max_streams{}
+    | #data_blocked{}
+    | #stream_data_blocked{}
+    | #streams_blocked{}
+    | #new_connection_id{}
+    | #retire_connection_id{}
+    | #path_challenge{}
+    | #path_response{}
+    | #connection_close{}
+    | #handshake_done{}
+    | #datagram{}.
 
 -doc "Decode a single QUIC frame from binary. Returns `{ok, Frame, Rest}` or `{error, Reason}`.".
 -spec decode(binary()) -> {ok, t(), binary()} | {error, nquic_error:any_reason()}.

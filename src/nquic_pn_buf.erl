@@ -147,6 +147,10 @@ delete(PN, #buf{front = F, back = B, size = N} = Buf) ->
             end
     end.
 
+-spec exact_loss_time(non_neg_integer() | undefined | exhausted) -> non_neg_integer() | undefined.
+exact_loss_time(exhausted) -> undefined;
+exact_loss_time(Time) -> Time.
+
 -doc """
 Build a buffer from a list of `{PN, Pkt}` pairs. Sorts ascending and
 seeds `front` with the result. Intended for tests and migration
@@ -220,6 +224,24 @@ lookup(PN, #buf{front = F, back = B}) ->
 -spec new() -> buf().
 new() -> #buf{}.
 
+-spec next_loss_time(
+    [{nquic_packet_number:t(), nquic_loss:sent_packet()}],
+    nquic_packet_number:t(),
+    pos_integer()
+) -> non_neg_integer() | undefined | exhausted.
+next_loss_time([], _Largest, _LossDelay) ->
+    exhausted;
+next_loss_time([{PN, _} | _], Largest, _LossDelay) when PN > Largest ->
+    undefined;
+next_loss_time(
+    [{_PN, #sent_packet{in_flight = true, time_sent = TS}} | _], _Largest, LossDelay
+) when
+    is_integer(TS), is_integer(LossDelay)
+->
+    TS + LossDelay;
+next_loss_time([_ | Rest], Largest, LossDelay) ->
+    next_loss_time(Rest, Largest, LossDelay).
+
 -spec scan_asc_part(
     nquic_packet_number:t(),
     nquic_packet_number:t(),
@@ -289,28 +311,6 @@ scan_lost(
     scan_lost(Rest, Largest, PThresh, TCutoff, [Pkt | LostRev], MC + 1);
 scan_lost(All, _Largest, _PThresh, _TCutoff, LostRev, MC) ->
     {LostRev, All, MC}.
-
--spec next_loss_time(
-    [{nquic_packet_number:t(), nquic_loss:sent_packet()}],
-    nquic_packet_number:t(),
-    pos_integer()
-) -> non_neg_integer() | undefined | exhausted.
-next_loss_time([], _Largest, _LossDelay) ->
-    exhausted;
-next_loss_time([{PN, _} | _], Largest, _LossDelay) when PN > Largest ->
-    undefined;
-next_loss_time(
-    [{_PN, #sent_packet{in_flight = true, time_sent = TS}} | _], _Largest, LossDelay
-) when
-    is_integer(TS), is_integer(LossDelay)
-->
-    TS + LossDelay;
-next_loss_time([_ | Rest], Largest, LossDelay) ->
-    next_loss_time(Rest, Largest, LossDelay).
-
--spec exact_loss_time(non_neg_integer() | undefined | exhausted) -> non_neg_integer() | undefined.
-exact_loss_time(exhausted) -> undefined;
-exact_loss_time(Time) -> Time.
 
 -spec scan_older(
     [{nquic_packet_number:t(), nquic_loss:sent_packet()}],

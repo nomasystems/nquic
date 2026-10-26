@@ -1,14 +1,6 @@
 -module(nquic_lib_timer).
 -moduledoc false.
 
-%% Timer scheduling and migration finalisation for `nquic_lib'.
-%%
-%% Internal glue behind the `nquic_lib' facade. Owns the
-%% `erlang:send_after' / `erlang:cancel_timer' bookkeeping for QUIC
-%% protocol timers, the egress-ECN socket transition, and the
-%% post-self-migration dispatch-table cleanup. Runs in the owner
-%% process. `self()' is the connection owner.
-
 -include("nquic_conn.hrl").
 -export([
     absorb_migration_events/2,

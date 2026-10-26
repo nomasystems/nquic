@@ -1,16 +1,6 @@
 -module(nquic_lib_batch).
 -moduledoc false.
 
-%% Receive-batch / mailbox-drain engine for `nquic_lib'.
-%%
-%% Internal glue behind the `nquic_lib' facade. Implements the
-%% amortised receive path: drain every available packet (mailbox and,
-%% for connected sockets, the kernel queue), process each without
-%% scheduling timers, then schedule timers and flush exactly once.
-%% Runs in the owner process. Calls back into the frozen `nquic_lib'
-%% public API (`handle_packet_notimers/3,4', `timeout/2',
-%% `schedule_timers/1', `flush/1') for the per-packet protocol step.
-
 -export([
     drain_packet_batch/6,
     recv_batch_connected/2,
@@ -100,14 +90,6 @@ batch_drain_loop_dispatched(Ctx, EventsAcc) ->
         batch_finish(Ctx, EventsAcc)
     end.
 
--spec batch_timeout(nquic:ctx(), nquic_protocol:timer_type(), [nquic_protocol:event()]) ->
-    {ok, [nquic_protocol:event()], nquic:ctx()} | {error, term(), nquic:ctx()}.
-batch_timeout(Ctx, Type, EventsAcc) ->
-    case nquic_lib:timeout(Ctx, Type) of
-        {ok, Events, Ctx1} -> batch_finish(Ctx1, lists:reverse(Events, EventsAcc));
-        {error, _Reason, _Ctx1} = Error -> Error
-    end.
-
 -spec batch_finish(nquic:ctx(), [nquic_protocol:event()]) ->
     {ok, [nquic_protocol:event()], nquic:ctx()}.
 batch_finish(Ctx, EventsAcc) ->
@@ -162,6 +144,14 @@ batch_first_ready(Ctx, Socket) ->
             {ok, [], Ctx};
         {error, Reason} ->
             {error, Reason, Ctx}
+    end.
+
+-spec batch_timeout(nquic:ctx(), nquic_protocol:timer_type(), [nquic_protocol:event()]) ->
+    {ok, [nquic_protocol:event()], nquic:ctx()} | {error, term(), nquic:ctx()}.
+batch_timeout(Ctx, Type, EventsAcc) ->
+    case nquic_lib:timeout(Ctx, Type) of
+        {ok, Events, Ctx1} -> batch_finish(Ctx1, lists:reverse(Events, EventsAcc));
+        {error, _Reason, _Ctx1} = Error -> Error
     end.
 
 -spec drain_packet_batch(

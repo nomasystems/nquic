@@ -1,15 +1,6 @@
 -module(nquic_lib_socket).
 -moduledoc false.
 
-%% Low-level socket receive and send glue for `nquic_lib'.
-%%
-%% Internal glue behind the `nquic_lib' facade. Wraps the raw
-%% `socket' syscalls used by the owner loop: a single non-blocking
-%% `recvmsg' (with GSO-size extraction from control messages), the
-%% packet send path (connected vs. unconnected, with GSO run
-%% coalescing), and stale `'$socket'' message draining after a socket
-%% swap. Runs in the owner process.
-
 -include("nquic_frame.hrl").
 -include("nquic_socket.hrl").
 -export([

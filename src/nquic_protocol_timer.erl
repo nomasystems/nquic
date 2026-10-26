@@ -134,20 +134,6 @@ compute_pto_timer_cached(#conn_state{last_pto_ms = Cached} = State, Acc) ->
         Timer -> {[loss_detection_action(Timer) | Acc], State#conn_state{last_pto_ms = Timer}}
     end.
 
--spec is_client_awaiting_handshake_ack(nquic_protocol:state()) -> boolean().
-is_client_awaiting_handshake_ack(#conn_state{role = Role, loss_state = LS, crypto = Crypto}) ->
-    Role =:= client andalso
-        not nquic_loss:has_received_ack(LS, handshake) andalso
-        not is_handshake_confirmed(Crypto).
-
--spec is_handshake_confirmed(#conn_crypto{}) -> boolean().
-is_handshake_confirmed(#conn_crypto{keys = Keys}) ->
-    not maps:is_key(initial, Keys) andalso not maps:is_key(handshake, Keys).
-
--spec is_pto_armed(nquic_protocol:state()) -> boolean().
-is_pto_armed(#conn_state{loss_state = LS} = State) ->
-    nquic_loss:has_ack_eliciting_in_flight(LS) orelse is_client_awaiting_handshake_ack(State).
-
 -doc """
 Compute timer actions based on current state.
 Returns idle and PTO timer actions the caller should schedule.
@@ -165,26 +151,19 @@ compute_timer_actions(State) ->
     {Acc4, State2} = compute_idle_timer_cached(State1, Acc3),
     {Acc4, State2}.
 
--doc """
-Get the deadline of the loss detection timer in
-`erlang:monotonic_time(millisecond)` units, or `cancel` when the timer
-must not run. A pending loss time (`nquic_loss:get_loss_timer/1`) is the
-deadline, rounded up to the next millisecond. Otherwise the timer is the
-PTO.
+-spec is_client_awaiting_handshake_ack(nquic_protocol:state()) -> boolean().
+is_client_awaiting_handshake_ack(#conn_state{role = Role, loss_state = LS, crypto = Crypto}) ->
+    Role =:= client andalso
+        not nquic_loss:has_received_ack(LS, handshake) andalso
+        not is_handshake_confirmed(Crypto).
 
-The deadline is one PTO period after `nquic_loss:get_pto_base_time/1`
-(RFC 9002 Appendix A.8). A recompute that sees no new ack-eliciting
-packet gives the same deadline, so received datagrams do not push the
-timer out. With nothing in flight, which is the client anti-deadlock
-PTO, the deadline is one PTO period after now.
-""".
--spec pto_deadline_ms(nquic_protocol:state()) -> integer() | cancel.
-pto_deadline_ms(#conn_state{loss_state = LS} = State) ->
-    case loss_detection_timer(State) of
-        {loss, LossTimeUs} -> ceil_ms(LossTimeUs);
-        cancel -> cancel;
-        PtoMs -> pto_base_ms(nquic_loss:get_pto_base_time(LS)) + PtoMs
-    end.
+-spec is_handshake_confirmed(#conn_crypto{}) -> boolean().
+is_handshake_confirmed(#conn_crypto{keys = Keys}) ->
+    not maps:is_key(initial, Keys) andalso not maps:is_key(handshake, Keys).
+
+-spec is_pto_armed(nquic_protocol:state()) -> boolean().
+is_pto_armed(#conn_state{loss_state = LS} = State) ->
+    nquic_loss:has_ack_eliciting_in_flight(LS) orelse is_client_awaiting_handshake_ack(State).
 
 -spec loss_detection_action(loss_detection_timer()) -> nquic_protocol:timeout_action().
 loss_detection_action({loss, LossTimeUs}) ->
@@ -211,3 +190,23 @@ pto_base_ms(undefined) ->
     erlang:monotonic_time(millisecond);
 pto_base_ms(BaseUs) ->
     erlang:convert_time_unit(BaseUs, microsecond, millisecond).
+
+-doc """
+Get the deadline of the loss detection timer in
+`erlang:monotonic_time(millisecond)` units, or `cancel` when the timer
+must not run. A pending loss time (`nquic_loss:get_loss_timer/1`) is the
+deadline, rounded up to the next millisecond. Otherwise the timer is the
+PTO.
+The deadline is one PTO period after `nquic_loss:get_pto_base_time/1`
+(RFC 9002 Appendix A.8). A recompute that sees no new ack-eliciting
+packet gives the same deadline, so received datagrams do not push the
+timer out. With nothing in flight, which is the client anti-deadlock
+PTO, the deadline is one PTO period after now.
+""".
+-spec pto_deadline_ms(nquic_protocol:state()) -> integer() | cancel.
+pto_deadline_ms(#conn_state{loss_state = LS} = State) ->
+    case loss_detection_timer(State) of
+        {loss, LossTimeUs} -> ceil_ms(LossTimeUs);
+        cancel -> cancel;
+        PtoMs -> pto_base_ms(nquic_loss:get_pto_base_time(LS)) + PtoMs
+    end.

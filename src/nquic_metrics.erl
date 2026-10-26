@@ -49,7 +49,7 @@ attached to the row, so the conn-statem can bump `bytes_in` /
     touch_last_packet/2
 ]).
 
--export_type([conn_counters/0, conn_row/0, t/0, slot/0]).
+-export_type([conn_counters/0, conn_row/0, slot/0, t/0]).
 
 -type slot() ::
     packets_in

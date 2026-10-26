@@ -19,11 +19,11 @@ unmask-and-decrypt pipeline for received packets.
 -export_type([header/0, space/0]).
 
 -type space() :: initial | handshake | application.
--type header() :: #long_header{} | #short_header{}.
 
 -define(QUIC_V1, 16#00000001).
 -define(QUIC_V2, 16#6b3343cf).
 -define(SUPPORTED_VERSIONS, [?QUIC_V2, ?QUIC_V1]).
+-type header() :: #long_header{} | #short_header{}.
 
 -doc "Map header bits to packet type atom for the given QUIC version.".
 -spec bits_to_packet_type(0..3, non_neg_integer()) -> initial | rtt0 | handshake | retry.
