@@ -198,3 +198,17 @@ local_max_ack_delay_is_advertised_test() ->
     Local = #transport_params{initial_source_connection_id = <<1, 2, 3, 4>>},
     {ok, Decoded} = nquic_transport:decode(nquic_transport:encode(Local), client),
     ?assertEqual(10, Decoded#transport_params.max_ack_delay).
+
+absent_flow_params_decode_to_rfc_defaults_test_() ->
+    {ok, Decoded} = nquic_transport:decode(<<16#0f, 4, 1, 2, 3, 4>>, client),
+    Fields = [
+        {"initial_max_data", #transport_params.initial_max_data},
+        {"initial_max_stream_data_bidi_local",
+            #transport_params.initial_max_stream_data_bidi_local},
+        {"initial_max_stream_data_bidi_remote",
+            #transport_params.initial_max_stream_data_bidi_remote},
+        {"initial_max_stream_data_uni", #transport_params.initial_max_stream_data_uni},
+        {"initial_max_streams_bidi", #transport_params.initial_max_streams_bidi},
+        {"initial_max_streams_uni", #transport_params.initial_max_streams_uni}
+    ],
+    [{Name, ?_assertEqual(0, element(Index, Decoded))} || {Name, Index} <- Fields].

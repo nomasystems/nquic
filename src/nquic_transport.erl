@@ -47,7 +47,10 @@ connection ID management, and more.
 -define(PARAM_VERSION_INFORMATION, 16#11).
 -define(PARAM_MAX_DATAGRAM_FRAME_SIZE, 16#20).
 
+-define(DEFAULT_MAX_UDP_PAYLOAD_SIZE, 65527).
+-define(DEFAULT_ACK_DELAY_EXPONENT, 3).
 -define(DEFAULT_MAX_ACK_DELAY_MS, 25).
+-define(DEFAULT_ACTIVE_CID_LIMIT, 2).
 
 -spec apply_param(non_neg_integer(), binary(), params(), client | server) ->
     {ok, params()} | {error, term()}.
@@ -141,13 +144,29 @@ apply_param(_ID, _Val, Acc, _SenderRole) ->
 -spec decode(binary(), client | server) ->
     {ok, params()} | {error, nquic_error:any_reason()}.
 decode(Bin, SenderRole) ->
-    Absent = #transport_params{max_ack_delay = ?DEFAULT_MAX_ACK_DELAY_MS},
-    case decode_loop(Bin, SenderRole, Absent, #{}) of
+    case decode_loop(Bin, SenderRole, absent_params(), #{}) of
         {ok, Params, Seen} ->
             validate_required(Params, Seen, SenderRole);
         Error ->
             Error
     end.
+
+-spec absent_params() -> params().
+absent_params() ->
+    #transport_params{
+        max_idle_timeout = 0,
+        max_udp_payload_size = ?DEFAULT_MAX_UDP_PAYLOAD_SIZE,
+        initial_max_data = 0,
+        initial_max_stream_data_bidi_local = 0,
+        initial_max_stream_data_bidi_remote = 0,
+        initial_max_stream_data_uni = 0,
+        initial_max_streams_bidi = 0,
+        initial_max_streams_uni = 0,
+        ack_delay_exponent = ?DEFAULT_ACK_DELAY_EXPONENT,
+        max_ack_delay = ?DEFAULT_MAX_ACK_DELAY_MS,
+        disable_active_migration = false,
+        active_connection_id_limit = ?DEFAULT_ACTIVE_CID_LIMIT
+    }.
 
 -spec decode_loop(binary(), client | server, params(), #{non_neg_integer() => true}) ->
     {ok, params(), #{non_neg_integer() => true}} | {error, term()}.
