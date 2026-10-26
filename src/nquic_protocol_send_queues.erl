@@ -19,8 +19,7 @@ protocol family whenever a control or stream frame is produced.
     flush_app/1,
     flush_app_control/1,
     flush_handshake/1,
-    flush_initial/1,
-    maybe_piggyback_ack/1
+    flush_initial/1
 ]).
 
 -export([
@@ -71,7 +70,9 @@ enter_recovery(Before, #conn_state{loss_state = After} = State) ->
 -spec flush_app(nquic_protocol:state()) ->
     {ok, [iodata()], nquic_protocol:state()} | {ok, nquic_protocol:state()}.
 flush_app(State0) ->
-    State = nquic_protocol_streams_send:drain_pending_sends(maybe_piggyback_ack(State0)),
+    State = nquic_protocol_streams_send:drain_pending_sends(
+        maybe_piggyback_ack(has_app_frames(State0), State0)
+    ),
     Flow0 = State#conn_state.flow,
     Pending = Flow0#conn_flow.pending_app_frames,
     PreFromDrain = Flow0#conn_flow.pending_app_pre_encoded,
@@ -128,7 +129,8 @@ congestion controller (RFC 9002 §7.5).
 flush_app_control(#conn_state{crypto = #conn_crypto{app_send_keys = undefined}} = State) ->
     {ok, State};
 flush_app_control(State0) ->
-    State = maybe_piggyback_ack(State0),
+    Pending0 = (State0#conn_state.flow)#conn_flow.pending_app_frames,
+    State = maybe_piggyback_ack(lists:any(fun is_control_frame/1, Pending0), State0),
     Flow0 = State#conn_state.flow,
     case lists:partition(fun is_paced_frame/1, Flow0#conn_flow.pending_app_frames) of
         {_, []} ->
@@ -140,6 +142,19 @@ flush_app_control(State0) ->
             Time = erlang:monotonic_time(microsecond),
             flush_app_many(PreEncoded, Budget, Time, FlushState)
     end.
+
+-spec has_app_frames(nquic_protocol:state()) -> boolean().
+has_app_frames(#conn_state{
+    flow = #conn_flow{pending_app_frames = [], pending_app_pre_encoded = []},
+    streams_state = #conn_streams{pending_send_streams = PS}
+}) ->
+    map_size(PS) > 0;
+has_app_frames(_State) ->
+    true.
+
+-spec is_control_frame(nquic_frame:t()) -> boolean().
+is_control_frame(Frame) ->
+    not is_paced_frame(Frame).
 
 -spec is_paced_frame(nquic_frame:t()) -> boolean().
 is_paced_frame(#stream{}) -> true;
@@ -330,12 +345,14 @@ flush_initial(State) ->
             {[], State2}
     end.
 
--spec maybe_piggyback_ack(nquic_protocol:state()) -> nquic_protocol:state().
-maybe_piggyback_ack(#conn_state{pending_ack_count = 0} = State) ->
-    State;
-maybe_piggyback_ack(State) ->
-    State1 = nquic_protocol_ack:force_queue_ack(application, State),
-    State1#conn_state{pending_ack_count = 0}.
+-spec maybe_piggyback_ack(boolean(), nquic_protocol:state()) -> nquic_protocol:state().
+maybe_piggyback_ack(true, State) ->
+    nquic_protocol_ack:queue_pending_ack(State);
+maybe_piggyback_ack(false, State) ->
+    case nquic_protocol_ack:is_ack_due(State) of
+        true -> nquic_protocol_ack:queue_pending_ack(State);
+        false -> State
+    end.
 
 -spec queue_app_frame(nquic_frame:t(), nquic_protocol:state()) -> {ok, nquic_protocol:state()}.
 queue_app_frame(Frame, State) ->

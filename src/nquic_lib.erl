@@ -276,6 +276,11 @@ initiate_key_update(Ctx) ->
 Flush pending frames into packets and send them.
 Encrypts queued frames, sends the resulting packets via the socket,
 and schedules any timer updates.
+
+The ACK of a single request packet stays pending when nothing else is
+queued and no data of this endpoint is in flight. The response that the
+owner writes next carries the ACK in the same packet. If no response
+follows, the `{quic_timeout, ack_delay}` timer sends the ACK.
 """.
 -spec flush(nquic:ctx()) -> {ok, nquic:ctx()}.
 flush(Ctx) ->

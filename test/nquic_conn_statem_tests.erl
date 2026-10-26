@@ -1823,3 +1823,35 @@ validate_version_info_v2_ok_test() ->
     VI = #{chosen_version => 16#6b3343cf, other_versions => [16#6b3343cf, 1]},
     Params = #transport_params{version_information = VI},
     ?assertEqual(ok, nquic_protocol_handshake:validate_version_info(State, Params)).
+
+ack_delay_timeout_sends_held_ack_during_handshake_test() ->
+    {ok, PeerSock} = socket:open(inet, dgram, udp),
+    ok = socket:bind(PeerSock, #{family => inet, addr => {127, 0, 0, 1}, port => 0}),
+    {ok, #{port := PeerPort}} = socket:sockname(PeerSock),
+    {ok, Socket} = nquic_socket:open(#{}),
+    Secret = crypto:strong_rand_bytes(32),
+    {K, IV, HP} = nquic_keys:derive_packet_protection(Secret, aes_128_gcm, 1),
+    Data = #conn_state{
+        role = client,
+        dcid = <<1, 2, 3, 4, 5, 6, 7, 8>>,
+        scid = <<9, 10, 11, 12, 13, 14, 15, 16>>,
+        socket = Socket,
+        peer = nquic_socket:make_sockaddr({127, 0, 0, 1}, PeerPort),
+        crypto = #conn_crypto{
+            cipher = aes_128_gcm,
+            app_send_keys = nquic_keys:make_role_keys(aes_128_gcm, K, IV, HP),
+            keys = #{}
+        },
+        pending_ack_count = 1,
+        pn_spaces = #{application => #{next_pn => 0, received_ranges => [{0, 0}]}},
+        loss_state = nquic_loss:init(),
+        path = #conn_path_mgmt{address_validated = true},
+        flow = #conn_flow{},
+        streams_state = #conn_streams{}
+    },
+    {keep_state, Data1, _} =
+        nquic_conn_statem:handle_common({timeout, ack_delay}, ack_delay_fire, handshake, Data),
+    ?assertEqual(0, Data1#conn_state.pending_ack_count),
+    ?assertMatch({ok, <<_, _/binary>>}, socket:recv(PeerSock, 0, 1000)),
+    nquic_socket:close(Socket),
+    socket:close(PeerSock).
