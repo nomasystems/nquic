@@ -31,7 +31,7 @@ bump_acid_limit(Limit, _) ->
 gso_size(Opts) ->
     case maps:get(gso, Opts, false) of
         false -> undefined;
-        true -> 1200;
+        true -> ?MIN_UDP_PAYLOAD_SIZE;
         N when is_integer(N), N > 0 -> N;
         _ -> undefined
     end.
@@ -42,8 +42,8 @@ loss_state(Opts) ->
         maps:get(congestion_control, Opts, cubic),
         pacer_opts(Opts)
     ),
-    case maps:get(max_payload_size, Opts, 1200) of
-        N when is_integer(N), N > 1200 ->
+    case maps:get(max_payload_size, Opts, ?MIN_UDP_PAYLOAD_SIZE) of
+        N when is_integer(N), N > ?MIN_UDP_PAYLOAD_SIZE ->
             nquic_loss:set_max_datagram_size(LS0, N);
         _ ->
             LS0
@@ -181,7 +181,7 @@ new_conn_state(Opts) ->
         listener = Listener,
         loss_state = loss_state(Opts),
         gso_size = gso_size(Opts),
-        max_payload_size = maps:get(max_payload_size, Opts, 1200),
+        max_payload_size = maps:get(max_payload_size, Opts, ?MIN_UDP_PAYLOAD_SIZE),
         local_params = LocalParams,
         version = Version,
         version_preference = VersionPref,

@@ -19,6 +19,7 @@ connection ID generation.
     handshake_secrets/2,
     handshake_secrets/3,
     handshake_secrets/4,
+    hkdf_extract/3,
     initial_salt/1,
     initial_secrets/1,
     initial_secrets/2,
@@ -230,6 +231,7 @@ hkdf_expand(Hash, PRK, Info, Length, N, I, T, Acc) ->
     NI = crypto:mac(hmac, Hash, PRK, <<T/binary, Info/binary, I:8>>),
     hkdf_expand(Hash, PRK, Info, Length, N, I + 1, NI, <<Acc/binary, NI/binary>>).
 
+-doc "HKDF-Extract (RFC 5869 §2.2).".
 -spec hkdf_extract(sha256 | sha384, binary(), binary()) -> binary().
 hkdf_extract(Hash, Salt, IKM) ->
     crypto:mac(hmac, Hash, Salt, IKM).

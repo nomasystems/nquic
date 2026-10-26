@@ -11,6 +11,7 @@ States: disabled, base, searching, search_complete, error.
 """.
 
 -include("nquic_frame.hrl").
+-include("nquic_transport.hrl").
 -export([
     disable/1,
     enable/1,
@@ -30,7 +31,7 @@ States: disabled, base, searching, search_complete, error.
 
 -export_type([pmtud_state/0]).
 
--define(BASE_PLPMTU, 1200).
+-define(BASE_PLPMTU, ?MIN_UDP_PAYLOAD_SIZE).
 -define(MAX_PLPMTU, 1452).
 -define(MIN_PROBE_STEP, 20).
 -define(MAX_PROBE_RETRIES, 3).

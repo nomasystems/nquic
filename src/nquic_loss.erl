@@ -17,10 +17,12 @@ controller's window collapses to `2 * max_datagram_size`.
 
 -include("nquic_frame.hrl").
 -include("nquic_loss.hrl").
+-include("nquic_transport.hrl").
 -export([
-    detect_loss/3,
+    detect_loss/4,
 
     get_ack_eliciting_frames/2,
+    get_ack_eliciting_frames_by_packet/2,
     get_ack_eliciting_in_flight/1,
     get_bytes_in_flight/1,
     get_cc_algorithm/1,
@@ -38,7 +40,9 @@ controller's window collapses to `2 * max_datagram_size`.
     has_received_ack/2,
     init/0,
     init/1,
+    is_ack_eliciting/1,
     on_ack_received/6,
+    on_ack_received/7,
     on_packet_sent/6,
     on_pto/1,
     reset_pto_count/1,
@@ -46,7 +50,7 @@ controller's window collapses to `2 * max_datagram_size`.
 ]).
 -export([set_max_datagram_size/2]).
 -export([clear_handshake_spaces/1, clear_initial_space/1]).
--export([is_ecn_enabled/1, process_ecn_counts/3, set_ecn_enabled/2]).
+-export([is_ecn_enabled/1, process_ecn_counts/4, set_ecn_enabled/2]).
 -export([clear_ecn_socket_dirty/1, is_ecn_socket_dirty/1]).
 -export([path_stats/1]).
 -export([
@@ -58,9 +62,11 @@ controller's window collapses to `2 * max_datagram_size`.
     pacer_next_send_time/1
 ]).
 
--export_type([cc_opts/0, loss_state/0, pacer_opts/0, path_stats/0, sent_packet/0]).
+-export_type([cc_opts/0, ecn_counts/0, loss_state/0, pacer_opts/0, path_stats/0, sent_packet/0]).
 
 -type sent_packet() :: #sent_packet{}.
+
+-type ecn_counts() :: {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 
 -type pacer_opts() :: #{
     enabled => boolean(),
@@ -147,20 +153,26 @@ add_recently_lost(RecentlyLost, Packets) ->
     lists:foldl(
         fun(P, Acc) -> nquic_pn_buf:insert(P#sent_packet.packet_number, P, Acc) end,
         RecentlyLost,
-        Packets
+        [P || #sent_packet{in_flight = true} = P <- Packets]
     ).
 
+-spec any_ack_eliciting([sent_packet()]) -> boolean().
+any_ack_eliciting([]) -> false;
+any_ack_eliciting([#sent_packet{ack_eliciting = true} | _]) -> true;
+any_ack_eliciting([_ | T]) -> any_ack_eliciting(T).
+
 -spec cc_acked_loop(
-    [sent_packet()], dynamic(), non_neg_integer(), map()
+    [sent_packet()], dynamic(), non_neg_integer(), non_neg_integer(), map()
 ) -> {dynamic(), non_neg_integer()}.
-cc_acked_loop([], CC, InFlight, _RTTStats) ->
+cc_acked_loop([], CC, _PriorInFlight, InFlight, _RTTStats) ->
     {CC, InFlight};
-cc_acked_loop([#sent_packet{in_flight = true, size = Sz} = P | Rest], CC, InFlight, RTTStats) ->
-    CC1 = nquic_cc:on_packet_acked(CC, P, InFlight, RTTStats),
-    cc_acked_loop(Rest, CC1, max(0, InFlight - Sz), RTTStats);
-cc_acked_loop([P | Rest], CC, InFlight, RTTStats) ->
-    CC1 = nquic_cc:on_packet_acked(CC, P, InFlight, RTTStats),
-    cc_acked_loop(Rest, CC1, InFlight, RTTStats).
+cc_acked_loop(
+    [#sent_packet{in_flight = true, size = Sz} = P | Rest], CC, PriorInFlight, InFlight, RTTStats
+) ->
+    CC1 = nquic_cc:on_packet_acked(CC, P, PriorInFlight, RTTStats),
+    cc_acked_loop(Rest, CC1, PriorInFlight, max(0, InFlight - Sz), RTTStats);
+cc_acked_loop([#sent_packet{in_flight = false} | Rest], CC, PriorInFlight, InFlight, RTTStats) ->
+    cc_acked_loop(Rest, CC, PriorInFlight, InFlight, RTTStats).
 
 -spec cc_opts_for_new(map()) -> map().
 cc_opts_for_new(Opts) ->
@@ -169,17 +181,23 @@ cc_opts_for_new(Opts) ->
         Mode -> #{slow_start => Mode}
     end.
 
--doc "Clear initial and handshake sent-packet maps after handshake is confirmed.".
+-doc """
+Discard the Initial and Handshake spaces once the handshake is confirmed.
+Same as `clear_initial_space/1` for each space.
+""".
 -spec clear_handshake_spaces(loss_state()) -> loss_state().
-clear_handshake_spaces(#loss_state{sent_packets = SP} = State) ->
-    State#loss_state{
-        sent_packets = SP#{initial => nquic_pn_buf:new(), handshake => nquic_pn_buf:new()}
-    }.
+clear_handshake_spaces(State) ->
+    discard_space(handshake, discard_space(initial, State)).
 
--doc "Clear the Initial-space sent-packet buffer after RFC 9001 §4.9.1 key discard.".
+-doc """
+Discard the Initial space after the key discard of RFC 9001 §4.9.1.
+The packets of the space leave `bytes_in_flight` and the ack-eliciting
+count, its loss time is cleared, and the PTO backoff resets
+(RFC 9002 §6.4, Appendix A.10).
+""".
 -spec clear_initial_space(loss_state()) -> loss_state().
-clear_initial_space(#loss_state{sent_packets = SP} = State) ->
-    State#loss_state{sent_packets = SP#{initial => nquic_pn_buf:new()}}.
+clear_initial_space(State) ->
+    discard_space(initial, State).
 
 -spec count_ack_eliciting_in_flight([sent_packet()]) -> non_neg_integer().
 count_ack_eliciting_in_flight(Packets) -> count_aeif(Packets, 0).
@@ -192,12 +210,18 @@ count_aeif([#sent_packet{ack_eliciting = true, in_flight = true} | T], Acc) ->
 count_aeif([_ | T], Acc) ->
     count_aeif(T, Acc).
 
--doc "Run loss detection for a specific packet number space at the given time.".
--spec detect_loss(loss_state(), nquic_packet:space(), non_neg_integer()) ->
+-doc """
+Run loss detection for `Space` at `Now`, as the loss timer of
+RFC 9002 Appendix A.10 does. The lost packets leave `bytes_in_flight`
+and go to the congestion controller, with the persistent congestion
+check of RFC 9002 §7.6. `MaxAckDelayUs` is as in `on_ack_received/7`.
+Returns the frames of the lost packets.
+""".
+-spec detect_loss(loss_state(), nquic_packet:space(), non_neg_integer(), non_neg_integer()) ->
     {ok, loss_state(), [nquic_frame:t()]}.
-detect_loss(State, Space, Now) ->
+detect_loss(State, Space, Now, MaxAckDelayUs) ->
     {State1, LostPackets} = detect_loss_internal(State, Space, Now),
-    {ok, State1, extract_frames(LostPackets)}.
+    {ok, on_packets_lost(State1, LostPackets, MaxAckDelayUs), extract_frames(LostPackets)}.
 
 -spec detect_loss_internal(loss_state(), nquic_packet:space(), non_neg_integer()) ->
     {loss_state(), [sent_packet()]}.
@@ -229,7 +253,7 @@ detect_loss_internal(State, Space, Now) ->
 
             {LostPackets, NewSpaceSent, NextLossTime} =
                 nquic_pn_buf:take_lost(
-                    SpaceSent, PacketThresholdCutoff, LossTimeCutoff, LossDelay
+                    SpaceSent, LargestAcked, PacketThresholdCutoff, LossTimeCutoff, LossDelay
                 ),
 
             LostAEIF = count_ack_eliciting_in_flight(LostPackets),
@@ -252,6 +276,45 @@ detect_loss_internal(State, Space, Now) ->
                 },
                 LostPackets
             }
+    end.
+
+-spec discard_space(initial | handshake, loss_state()) -> loss_state().
+discard_space(Space, State) ->
+    #loss_state{
+        sent_packets = AllSent,
+        loss_time = AllLossTime,
+        bytes_in_flight = InFlight,
+        ack_eliciting_in_flight = AEIF
+    } = State,
+    Discarded = [
+        P
+     || #sent_packet{in_flight = true} = P <- nquic_pn_buf:values(maps:get(Space, AllSent))
+    ],
+    State#loss_state{
+        sent_packets = AllSent#{Space := nquic_pn_buf:new()},
+        loss_time = maps:remove(Space, AllLossTime),
+        bytes_in_flight = InFlight - lists:sum([Size || #sent_packet{size = Size} <- Discarded]),
+        ack_eliciting_in_flight = AEIF - count_ack_eliciting_in_flight(Discarded),
+        pto_count = 0
+    }.
+
+-spec earliest_loss_time(
+    [nquic_packet:space()],
+    #{nquic_packet:space() => non_neg_integer() | undefined},
+    {non_neg_integer(), nquic_packet:space()} | undefined
+) -> {non_neg_integer(), nquic_packet:space()} | undefined.
+earliest_loss_time([], _LossTimes, Best) ->
+    Best;
+earliest_loss_time([Space | Rest], LossTimes, Best) ->
+    case {maps:get(Space, LossTimes, undefined), Best} of
+        {undefined, _} ->
+            earliest_loss_time(Rest, LossTimes, Best);
+        {Time, undefined} ->
+            earliest_loss_time(Rest, LossTimes, {Time, Space});
+        {Time, {BestTime, _}} when Time < BestTime ->
+            earliest_loss_time(Rest, LossTimes, {Time, Space});
+        {_, _} ->
+            earliest_loss_time(Rest, LossTimes, Best)
     end.
 
 -spec extract_frames([sent_packet()]) -> [nquic_frame:t()].
@@ -278,6 +341,19 @@ get_ack_eliciting_frames(#loss_state{sent_packets = AllSent}, Space) ->
      || #sent_packet{ack_eliciting = true, in_flight = true, frames = Frames} <-
             nquic_pn_buf:values(maps:get(Space, AllSent)),
         Frame <- Frames
+    ].
+
+-doc """
+Get the frames of each ack-eliciting packet in flight in `Space`, one list
+per packet, oldest packet first.
+""".
+-spec get_ack_eliciting_frames_by_packet(loss_state(), nquic_packet:space()) ->
+    [[nquic_frame:t()]].
+get_ack_eliciting_frames_by_packet(#loss_state{sent_packets = AllSent}, Space) ->
+    [
+        Frames
+     || #sent_packet{ack_eliciting = true, in_flight = true, frames = Frames} <-
+            nquic_pn_buf:values(maps:get(Space, AllSent))
     ].
 
 -doc "Get the cached count of ack-eliciting packets currently in flight.".
@@ -308,13 +384,15 @@ get_cwnd(#loss_state{cc_state = CC}) ->
 get_largest_acked(#loss_state{largest_acked_packet = AllLargest}, Space) ->
     maps:get(Space, AllLargest, 0).
 
--doc "Get the earliest loss detection time across all packet number spaces, or undefined.".
--spec get_loss_timer(loss_state()) -> non_neg_integer() | undefined.
+-doc """
+Get the earliest loss time and its packet number space, or `undefined`
+when no space has one (RFC 9002 Appendix A.8, `GetLossTimeAndSpace`).
+On a tie the earlier space wins, in the order Initial, Handshake,
+Application.
+""".
+-spec get_loss_timer(loss_state()) -> {non_neg_integer(), nquic_packet:space()} | undefined.
 get_loss_timer(#loss_state{loss_time = LossTimes}) ->
-    T1 = maps:get(initial, LossTimes, undefined),
-    T2 = maps:get(handshake, LossTimes, undefined),
-    T3 = maps:get(application, LossTimes, undefined),
-    min_time(T1, min_time(T2, T3)).
+    earliest_loss_time([initial, handshake, application], LossTimes, undefined).
 
 -doc """
 Get the base time of the PTO timer (RFC 9002 Appendix A.8), or `undefined`
@@ -430,27 +508,46 @@ init(Algorithm, Opts) ->
         pacer = Pacer
     }.
 
+-spec has_padding([nquic_frame:t()]) -> boolean().
+has_padding([]) -> false;
+has_padding([#padding{} | _]) -> true;
+has_padding([_ | T]) -> has_padding(T).
+
+-doc """
+Whether `Frames` holds a frame other than ACK, PADDING or
+CONNECTION_CLOSE (RFC 9002 §2).
+""".
 -spec is_ack_eliciting([nquic_frame:t()]) -> boolean().
 is_ack_eliciting([]) -> false;
 is_ack_eliciting([#ack{} | T]) -> is_ack_eliciting(T);
 is_ack_eliciting([#padding{} | T]) -> is_ack_eliciting(T);
 is_ack_eliciting([#connection_close{} | T]) -> is_ack_eliciting(T);
-is_ack_eliciting(_) -> true.
+is_ack_eliciting([_ | _]) -> true.
 
 -doc "Check whether ECN is enabled for this connection.".
 -spec is_ecn_enabled(loss_state()) -> boolean().
 is_ecn_enabled(#loss_state{ecn_enabled = E}) -> E.
 
--spec is_idle_reset(
+-spec idle_periods(
     non_neg_integer() | undefined, non_neg_integer(), non_neg_integer(), nquic_rtt:rtt_state()
-) -> boolean().
-is_idle_reset(undefined, _TimeSent, _InFlight, _RTT) ->
-    false;
-is_idle_reset(_LastSend, _TimeSent, InFlight, _RTT) when InFlight > 0 ->
-    false;
-is_idle_reset(LastSend, TimeSent, _InFlight, RTT) ->
-    SRTT = nquic_rtt:smoothed_rtt(RTT),
-    SRTT > 0 andalso (TimeSent - LastSend) > 3 * SRTT.
+) -> non_neg_integer().
+idle_periods(undefined, _TimeSent, _InFlight, _RTT) ->
+    0;
+idle_periods(_LastSend, _TimeSent, InFlight, _RTT) when InFlight > 0 ->
+    0;
+idle_periods(LastSend, TimeSent, _InFlight, RTT) ->
+    #{smoothed_rtt := SRTT, rttvar := RTTVar} = nquic_rtt:get(RTT),
+    (TimeSent - LastSend) div (SRTT + max(4 * RTTVar, ?K_GRANULARITY_US)).
+
+-spec idle_restart(nquic_cc:cc_state(), non_neg_integer()) -> nquic_cc:cc_state().
+idle_restart(CC, 0) ->
+    CC;
+idle_restart(CC, Periods) ->
+    CC1 = nquic_cc:on_idle_reset(CC),
+    case nquic_cc:get_cwnd(CC1) =:= nquic_cc:get_cwnd(CC) of
+        true -> CC1;
+        false -> idle_restart(CC1, Periods - 1)
+    end.
 
 -spec is_persistent_congestion(
     [sent_packet()],
@@ -504,10 +601,8 @@ newest_ack_eliciting_time_desc([_ | Rest]) ->
     newest_ack_eliciting_time_desc(Rest).
 
 -doc """
-Process an ACK frame, returning updated state plus acked and lost frames.
-`MaxAckDelayUs` is the peer's advertised `max_ack_delay` in microseconds.
-It is used to compute the persistent congestion window (RFC 9002 Section
-7.6.1). Pass `0` if it is not yet known.
+Process an ACK frame without ECN counts. Same as `on_ack_received/7`
+with `undefined` counts.
 """.
 -spec on_ack_received(
     loss_state(),
@@ -519,6 +614,31 @@ It is used to compute the persistent congestion window (RFC 9002 Section
 ) ->
     {ok, loss_state(), [nquic_frame:t()], [nquic_frame:t()]}.
 on_ack_received(State, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs) ->
+    on_ack_received(State, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs, undefined).
+
+-doc """
+Process an ACK frame, returning updated state plus acked and lost frames.
+`MaxAckDelayUs` is the peer's advertised `max_ack_delay` in microseconds.
+It is used to compute the persistent congestion window (RFC 9002 Section
+7.6.1). Pass `0` if it is not yet known.
+
+An RTT sample is taken when the largest acknowledged packet is newly
+acknowledged and at least one newly acknowledged packet is ack-eliciting
+(RFC 9002 §5.1). When the ACK newly acknowledges a packet, `ECNCounts`
+go to `process_ecn_counts/4` with the send time of the largest newly
+acknowledged packet, before loss detection (RFC 9002 Appendix B.7).
+""".
+-spec on_ack_received(
+    loss_state(),
+    nquic_packet:space(),
+    [{non_neg_integer(), non_neg_integer()}],
+    non_neg_integer(),
+    non_neg_integer(),
+    non_neg_integer(),
+    ecn_counts() | undefined
+) ->
+    {ok, loss_state(), [nquic_frame:t()], [nquic_frame:t()]}.
+on_ack_received(State, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs, ECNCounts) ->
     #loss_state{
         sent_packets = AllSent,
         largest_acked_packet = AllLargest,
@@ -543,8 +663,11 @@ on_ack_received(State, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs) ->
                     process_acked_ranges(RecentlyLostSpace, AckedRanges),
                 NewCC =
                     case Spurious of
-                        [] -> CC;
-                        _ -> nquic_cc:on_spurious_congestion(CC)
+                        [] ->
+                            CC;
+                        _ ->
+                            SpuriousBytes = lists:sum([Sz || #sent_packet{size = Sz} <- Spurious]),
+                            nquic_cc:on_spurious_congestion(CC, SpuriousBytes)
                     end,
                 {NewCC, State#loss_state{
                     recently_lost = AllRecentlyLost#{Space := NewBuf},
@@ -563,18 +686,15 @@ on_ack_received(State, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs) ->
                     _ -> max(LargestAcked, MaxAcked)
                 end,
 
+            #sent_packet{time_sent = LargestSent} = Largest = find_largest_pkt(AckedPackets),
             State1 =
-                case find_largest_pkt(AckedPackets) of
-                    #sent_packet{
-                        packet_number = MaxAcked,
-                        time_sent = TimeSent,
-                        ack_eliciting = true
-                    } ->
-                        Sample = Now - TimeSent,
+                case {Largest, any_ack_eliciting(AckedPackets)} of
+                    {#sent_packet{packet_number = MaxAcked}, true} ->
+                        Sample = Now - LargestSent,
                         NewRTT = nquic_rtt:update(RTT, Sample, AckDelay),
                         FirstSample =
                             case State0#loss_state.first_rtt_sample of
-                                undefined -> TimeSent;
+                                undefined -> LargestSent;
                                 Existing -> Existing
                             end,
                         State0#loss_state{rtt_state = NewRTT, first_rtt_sample = FirstSample};
@@ -584,10 +704,10 @@ on_ack_received(State, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs) ->
 
             RTTStats = nquic_rtt:get(State1#loss_state.rtt_state),
             {CC1, InFlight1} =
-                cc_acked_loop(AckedPackets, CCAfterSpurious, InFlight, RTTStats),
+                cc_acked_loop(AckedPackets, CCAfterSpurious, InFlight, InFlight, RTTStats),
 
             AckedAEIF = count_ack_eliciting_in_flight(AckedPackets),
-            {State2, LostPackets} = detect_loss_internal(
+            State1a = process_ecn_counts(
                 State1#loss_state{
                     sent_packets = AllSent#{Space := NewSpaceSent},
                     largest_acked_packet = AllLargest#{Space => NewLargestAcked},
@@ -597,58 +717,49 @@ on_ack_received(State, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs) ->
                         State1#loss_state.ack_eliciting_in_flight - AckedAEIF
                 },
                 Space,
-                Now
+                ECNCounts,
+                LargestSent
             ),
+            {State2, LostPackets} = detect_loss_internal(State1a, Space, Now),
+            State3 = on_packets_lost(State2, LostPackets, MaxAckDelayUs),
 
-            LostBytes = lists:foldl(fun(P, Acc) -> Acc + P#sent_packet.size end, 0, LostPackets),
-            {CC2, InFlight2} =
-                if
-                    LostBytes > 0 ->
-                        LatestSentTime = lists:foldl(
-                            fun(P, Acc) -> max(P#sent_packet.time_sent, Acc) end,
-                            0,
-                            LostPackets
-                        ),
-                        C_new = nquic_cc:on_congestion_event(
-                            State2#loss_state.cc_state,
-                            LostBytes,
-                            State2#loss_state.bytes_in_flight,
-                            LatestSentTime
-                        ),
-                        I_new = lists:foldl(
-                            fun(P, Acc) ->
-                                if
-                                    P#sent_packet.in_flight -> max(0, Acc - P#sent_packet.size);
-                                    true -> Acc
-                                end
-                            end,
-                            State2#loss_state.bytes_in_flight,
-                            LostPackets
-                        ),
-                        {C_new, I_new};
-                    true ->
-                        {State2#loss_state.cc_state, State2#loss_state.bytes_in_flight}
-                end,
-
-            CC3 =
-                case
-                    is_persistent_congestion(
-                        LostPackets,
-                        State1#loss_state.first_rtt_sample,
-                        nquic_rtt:get(State2#loss_state.rtt_state),
-                        MaxAckDelayUs
-                    )
-                of
-                    true -> nquic_cc:on_persistent_congestion(CC2);
-                    false -> CC2
-                end,
-
-            AckedFrames = extract_frames(AckedPackets),
-            LostFrames = extract_frames(LostPackets),
-
-            {ok, State2#loss_state{cc_state = CC3, bytes_in_flight = InFlight2, pto_count = 0},
-                AckedFrames, LostFrames}
+            {ok, State3#loss_state{pto_count = 0}, extract_frames(AckedPackets),
+                extract_frames(LostPackets)}
     end.
+
+-spec on_packets_lost(loss_state(), [sent_packet()], non_neg_integer()) -> loss_state().
+on_packets_lost(State, [], _MaxAckDelayUs) ->
+    State;
+on_packets_lost(State, LostPackets, MaxAckDelayUs) ->
+    #loss_state{
+        cc_state = CC,
+        bytes_in_flight = InFlight,
+        rtt_state = RTT,
+        first_rtt_sample = FirstRttSample
+    } = State,
+    InFlightLost = [P || #sent_packet{in_flight = true} = P <- LostPackets],
+    LostBytes = lists:sum([Sz || #sent_packet{size = Sz} <- InFlightLost]),
+    {CC1, InFlight1} =
+        case LostBytes > 0 of
+            true ->
+                LatestSentTime = lists:max([T || #sent_packet{time_sent = T} <- InFlightLost]),
+                {
+                    nquic_cc:on_congestion_event(CC, LostBytes, InFlight, LatestSentTime),
+                    max(0, InFlight - LostBytes)
+                };
+            false ->
+                {CC, InFlight}
+        end,
+    CC2 =
+        case
+            is_persistent_congestion(
+                LostPackets, FirstRttSample, nquic_rtt:get(RTT), MaxAckDelayUs
+            )
+        of
+            true -> nquic_cc:on_persistent_congestion(CC1);
+            false -> CC1
+        end,
+    State#loss_state{cc_state = CC2, bytes_in_flight = InFlight1}.
 
 -doc "Record a sent packet in the given packet number space.".
 -spec on_packet_sent(
@@ -673,7 +784,7 @@ on_packet_sent(State, Space, PN, Frames, TimeSent, Size) ->
     SpaceSent = maps:get(Space, AllSent),
 
     IsAckEliciting = is_ack_eliciting(Frames),
-    InFlightPkt = IsAckEliciting orelse (Size > 0),
+    InFlightPkt = IsAckEliciting orelse has_padding(Frames),
 
     Packet = #sent_packet{
         packet_number = PN,
@@ -684,11 +795,7 @@ on_packet_sent(State, Space, PN, Frames, TimeSent, Size) ->
         frames = Frames
     },
 
-    CCAfterIdle =
-        case is_idle_reset(LastSend, TimeSent, InFlight, RTT) of
-            true -> nquic_cc:on_idle_reset(CC);
-            false -> CC
-        end,
+    CCAfterIdle = idle_restart(CC, idle_periods(LastSend, TimeSent, InFlight, RTT)),
 
     NewInFlight =
         if
@@ -702,7 +809,11 @@ on_packet_sent(State, Space, PN, Frames, TimeSent, Size) ->
             true -> AEIF
         end,
 
-    NewPacer = pacer_advance(Pacer, NewCC, RTT, TimeSent, Size),
+    NewPacer =
+        case InFlightPkt of
+            true -> pacer_advance(Pacer, NewCC, RTT, TimeSent, Size);
+            false -> Pacer
+        end,
 
     State#loss_state{
         sent_packets = AllSent#{Space := nquic_pn_buf:insert(PN, Packet, SpaceSent)},
@@ -747,21 +858,21 @@ process_acked_ranges_loop([{Low, High} | Rest], Sent, Acked) ->
     process_acked_ranges_loop(Rest, Sent1, Removed ++ Acked).
 
 -doc """
-Process ECN counts from a received ACK frame (RFC 9002 Section 7.1).
-Compares the peer's reported CE count against the last known baseline.
-If CE count increased, triggers a congestion event on the CC algorithm.
-If total ECN marks decreased (validation failure), disables ECN for the path.
-Returns `{ok, State}` when no CE increase was detected, or
-`{ok, State}` after congestion window reduction when CE increased.
+Process ECN counts from a received ACK frame (RFC 9002 §7.1).
+Compares the CE count of the peer against the last known baseline. When
+the CE count increased, the congestion controller gets a congestion
+event for a packet sent at `SentTime`, the send time of the largest
+acknowledged packet (RFC 9002 Appendix B.7). A CE increase for a packet
+sent before the current recovery period does not reduce the window
+again. When the total of the ECN counts decreased (validation failure),
+ECN is disabled for the path.
 """.
 -spec process_ecn_counts(
-    loss_state(),
-    nquic_packet:space(),
-    {non_neg_integer(), non_neg_integer(), non_neg_integer()} | undefined
+    loss_state(), nquic_packet:space(), ecn_counts() | undefined, non_neg_integer()
 ) -> loss_state().
-process_ecn_counts(State, _Space, undefined) ->
+process_ecn_counts(State, _Space, undefined, _SentTime) ->
     State;
-process_ecn_counts(State, Space, {ECT0, ECT1, CE}) ->
+process_ecn_counts(State, Space, {ECT0, ECT1, CE}, SentTime) ->
     #loss_state{
         peer_ecn_ce = AllCE,
         peer_ecn_total = AllTotal,
@@ -781,8 +892,7 @@ process_ecn_counts(State, Space, {ECT0, ECT1, CE}) ->
             },
             case CE > PrevCE of
                 true ->
-                    Now = erlang:monotonic_time(microsecond),
-                    NewCC = nquic_cc:on_congestion_event(CC, 0, InFlight, Now),
+                    NewCC = nquic_cc:on_congestion_event(CC, 0, InFlight, SentTime),
                     State1#loss_state{cc_state = NewCC};
                 false ->
                     State1
@@ -984,7 +1094,7 @@ set_ecn_enabled(State, E) -> State#loss_state{ecn_enabled = E}.
 
 -doc "Set the maximum datagram size used by the congestion controller.".
 -spec set_max_datagram_size(loss_state(), pos_integer()) -> loss_state().
-set_max_datagram_size(State, MaxSize) when MaxSize >= 1200 ->
+set_max_datagram_size(State, MaxSize) when MaxSize >= ?MIN_UDP_PAYLOAD_SIZE ->
     #loss_state{cc_state = CC} = State,
     NewCC = nquic_cc:set_max_datagram_size(CC, MaxSize),
     State#loss_state{cc_state = NewCC}.

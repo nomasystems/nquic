@@ -1,6 +1,8 @@
 -ifndef(NQUIC_TRANSPORT_HRL).
 -define(NQUIC_TRANSPORT_HRL, true).
 
+-define(MIN_UDP_PAYLOAD_SIZE, 1200).
+
 -record(transport_params, {
     original_destination_connection_id :: nquic:connection_id() | undefined,
     max_idle_timeout = 0 :: non_neg_integer(),
@@ -13,7 +15,7 @@
     initial_max_streams_bidi = 1024 :: non_neg_integer(),
     initial_max_streams_uni = 1024 :: non_neg_integer(),
     ack_delay_exponent = 3 :: 0..20,
-    max_ack_delay = 25 :: non_neg_integer(),
+    max_ack_delay = 10 :: non_neg_integer(),
     disable_active_migration = false :: boolean(),
     preferred_address :: nquic_transport:preferred_address() | undefined,
     active_connection_id_limit = 2 :: non_neg_integer(),

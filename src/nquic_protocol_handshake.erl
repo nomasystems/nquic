@@ -369,11 +369,9 @@ finalize_client_established(ResSecret, ZeroRTTOk, State) ->
         crypto_buffer = #{}
     },
     Path = State#conn_state.path,
-    LossState = nquic_loss:clear_handshake_spaces(State#conn_state.loss_state),
     State#conn_state{
         crypto = NewCrypto,
-        path = Path#conn_path_mgmt{address_validated = true},
-        loss_state = LossState
+        path = Path#conn_path_mgmt{address_validated = true}
     }.
 
 -spec finalize_server_established(nquic_protocol:state()) -> nquic_protocol:state().
@@ -830,9 +828,8 @@ install_app_keys(Keys, State, Buffers) ->
                     ok ?= validate_version_info(State, RemoteParams),
                     D = State#conn_state{remote_params = RemoteParams},
                     D1 = nquic_flow:init_conn_limits(D),
-                    MaxSize = RemoteParams#transport_params.max_udp_payload_size,
                     NewLoss = nquic_loss:set_max_datagram_size(
-                        D1#conn_state.loss_state, MaxSize
+                        D1#conn_state.loss_state, nquic_protocol_send:max_datagram_size(D1)
                     ),
                     D1#conn_state{loss_state = NewLoss}
                 end
@@ -900,8 +897,9 @@ install_handshake_keys(Keys, State, Buffers) ->
             RemoteParams ->
                 D = State#conn_state{remote_params = RemoteParams},
                 D1 = nquic_flow:init_conn_limits(D),
-                MaxSize = RemoteParams#transport_params.max_udp_payload_size,
-                NewLoss = nquic_loss:set_max_datagram_size(D1#conn_state.loss_state, MaxSize),
+                NewLoss = nquic_loss:set_max_datagram_size(
+                    D1#conn_state.loss_state, nquic_protocol_send:max_datagram_size(D1)
+                ),
                 D1#conn_state{loss_state = NewLoss}
         end,
 

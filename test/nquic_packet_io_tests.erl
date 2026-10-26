@@ -179,31 +179,6 @@ send_close_frame_initial_no_pn_space_test() ->
     nquic_socket:close(RecvSock),
     nquic_socket:close(SendSock).
 
-hp_sample_large_ciphertext_test() ->
-    Large = crypto:strong_rand_bytes(32),
-    Tag = crypto:strong_rand_bytes(16),
-    Sample = nquic_packet_io:hp_sample(Large, Tag, 0),
-    ?assertEqual(16, byte_size(Sample)),
-    <<Expected:16/binary, _/binary>> = Large,
-    ?assertEqual(Expected, Sample).
-
-hp_sample_small_ciphertext_test() ->
-    Small = <<1, 2, 3, 4, 5>>,
-    Tag = crypto:strong_rand_bytes(16),
-    Sample = nquic_packet_io:hp_sample(Small, Tag, 0),
-    ?assertEqual(16, byte_size(Sample)),
-    Combined = <<Small/binary, Tag/binary>>,
-    <<Expected:16/binary, _/binary>> = Combined,
-    ?assertEqual(Expected, Sample).
-
-hp_sample_with_offset_test() ->
-    Ciphertext = crypto:strong_rand_bytes(32),
-    Tag = crypto:strong_rand_bytes(16),
-    Sample = nquic_packet_io:hp_sample(Ciphertext, Tag, 4),
-    ?assertEqual(16, byte_size(Sample)),
-    <<_:4/binary, Expected:16/binary, _/binary>> = Ciphertext,
-    ?assertEqual(Expected, Sample).
-
 send_initial_packet_multiple_frames_test() ->
     {ok, RecvSock} = nquic_socket:open(#{}),
     {ok, RecvPort} = nquic_socket:port(RecvSock),

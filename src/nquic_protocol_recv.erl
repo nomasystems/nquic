@@ -179,7 +179,8 @@ retry_with_version(NewVersion, State) ->
         crypto = NewCrypto,
         pn_spaces = #{},
         app_next_pn = 0,
-        app_largest_received = -1
+        app_largest_received = -1,
+        app_largest_received_us = undefined
     },
     {ok, State2} = nquic_protocol_handshake:start_client_handshake(State1),
     {ok, [], State2}.
@@ -251,6 +252,7 @@ resend_initial_after_retry(NewDCID, ODCID, RetryToken, State) ->
         pn_spaces = #{initial => #{next_pn => 0}},
         app_next_pn = 0,
         app_largest_received = -1,
+        app_largest_received_us = undefined,
         loss_state = nquic_loss:init(
             nquic_loss:get_cc_algorithm(State#conn_state.loss_state),
             nquic_loss:pacer_config(State#conn_state.loss_state)
@@ -285,6 +287,14 @@ check_stateless_reset(Packet, #conn_state{path = #conn_path_mgmt{peer_cids = Pee
 -spec decrypt_and_process(binary(), binary(), nquic_packet:header(), nquic_protocol:state()) ->
     {ok, [nquic_protocol:event()], nquic_protocol:state()}
     | {error, term(), nquic_protocol:state()}.
+decrypt_and_process(
+    _Packet,
+    _Rest,
+    #short_header{},
+    #conn_state{role = server, crypto = #conn_crypto{tls_state = TLSState}} = State
+) when TLSState =/= undefined ->
+    %% RFC 9001 §5.7: no 1-RTT processing on the server before the client Finished.
+    {ok, [], State};
 decrypt_and_process(Packet, Rest, #short_header{} = Header, State) ->
     LargestRecv = max(0, State#conn_state.app_largest_received),
     case decrypt_short_with_key_update(Packet, Rest, Header, LargestRecv, State) of
@@ -712,21 +722,18 @@ handle_ack_frame(
     AckedRanges = nquic_frame_handler:decode_ack_ranges(LargestAcked, FirstRange, Ranges),
     Now = erlang:monotonic_time(microsecond),
     AckDelay = nquic_protocol:scale_ack_delay(Delay, RemoteParams),
-    MaxAckDelayUs =
-        case RemoteParams of
-            #transport_params{max_ack_delay = MAD} -> MAD * 1000;
-            undefined -> 25_000
-        end,
+    MaxAckDelayUs = nquic_protocol_send:peer_max_ack_delay_us(RemoteParams),
     InFlightBefore = nquic_loss:get_bytes_in_flight(LossState),
     {ok, NewLossState, AckedFrames, LostFrames} = nquic_loss:on_ack_received(
-        LossState, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs
+        LossState, Space, AckedRanges, AckDelay, Now, MaxAckDelayUs, ECNCounts
     ),
     NewLossState1 = keep_client_initial_backoff(
         State#conn_state.role, Space, LossState, NewLossState
     ),
-    NewLossState2 = nquic_loss:process_ecn_counts(NewLossState1, Space, ECNCounts),
-    InFlightAfter = nquic_loss:get_bytes_in_flight(NewLossState2),
-    State1 = State#conn_state{loss_state = NewLossState2},
+    InFlightAfter = nquic_loss:get_bytes_in_flight(NewLossState1),
+    State1 = nquic_protocol_send_queues:enter_recovery(
+        LossState, State#conn_state{loss_state = NewLossState1}
+    ),
     State1a = nquic_protocol_ack:apply_received_ranges_prune(Space, AckedFrames, State1),
     State2 = nquic_protocol_send:handle_lost_frames(LostFrames, Space, State1a),
     case InFlightAfter < InFlightBefore of

@@ -142,7 +142,7 @@ maybe_detect_black_hole(#conn_state{pmtud = undefined} = State) ->
 maybe_detect_black_hole(#conn_state{pmtud = PS, loss_state = LS} = State) ->
     PtoCount = nquic_loss:get_pto_count(LS),
     CurrentMTU = nquic_pmtud:get_current_mtu(PS),
-    case PtoCount >= ?BLACK_HOLE_PTO_THRESHOLD andalso CurrentMTU > 1200 of
+    case PtoCount >= ?BLACK_HOLE_PTO_THRESHOLD andalso CurrentMTU > ?MIN_UDP_PAYLOAD_SIZE of
         true -> pmtud_on_black_hole(State);
         false -> State
     end.
@@ -153,10 +153,14 @@ pmtud_on_black_hole(#conn_state{pmtud = undefined} = State) ->
     State;
 pmtud_on_black_hole(#conn_state{pmtud = PS, loss_state = LS} = State) ->
     PS1 = nquic_pmtud:on_black_hole(PS),
-    LS1 = nquic_loss:set_max_datagram_size(LS, 1200),
+    LS1 = nquic_loss:set_max_datagram_size(LS, ?MIN_UDP_PAYLOAD_SIZE),
     State#conn_state{pmtud = PS1, loss_state = LS1}.
 
--doc "Called when a PMTUD probe was acknowledged. Updates MTU if search progresses.".
+-doc """
+Called when a PMTUD probe was acknowledged. Updates the MTU if the search
+progresses. The congestion controller gets the MTU bounded by
+`nquic_protocol_send:max_datagram_size/1`.
+""".
 -spec pmtud_on_probe_acked(nquic_protocol:state()) -> nquic_protocol:state().
 pmtud_on_probe_acked(#conn_state{pmtud = undefined} = State) ->
     State;
@@ -166,8 +170,12 @@ pmtud_on_probe_acked(#conn_state{pmtud = PS, loss_state = LS} = State) ->
     OldMTU = nquic_pmtud:get_current_mtu(PS),
     LS1 =
         case NewMTU > OldMTU of
-            true -> nquic_loss:set_max_datagram_size(LS, NewMTU);
-            false -> LS
+            true ->
+                nquic_loss:set_max_datagram_size(
+                    LS, min(NewMTU, nquic_protocol_send:max_datagram_size(State))
+                );
+            false ->
+                LS
         end,
     State#conn_state{pmtud = PS1, loss_state = LS1}.
 

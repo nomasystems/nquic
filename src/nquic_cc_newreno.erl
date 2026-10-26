@@ -11,6 +11,7 @@ loss reduction factor of 0.5. Initial window follows RFC 9002 Section 7.2:
 -behaviour(nquic_cc).
 
 -include("nquic_loss.hrl").
+-include("nquic_transport.hrl").
 -export([
     get_cwnd/1,
     get_ssthresh/1,
@@ -21,7 +22,7 @@ loss reduction factor of 0.5. Initial window follows RFC 9002 Section 7.2:
     on_packet_acked/4,
     on_packet_sent/3,
     on_persistent_congestion/1,
-    on_spurious_congestion/1
+    on_spurious_congestion/2
 ]).
 -export([get_max_datagram_size/1, set_max_datagram_size/2]).
 -export([initial_window/1]).
@@ -33,7 +34,7 @@ loss reduction factor of 0.5. Initial window follows RFC 9002 Section 7.2:
     cwnd :: non_neg_integer(),
     ssthresh = 16#FFFFFFFFFFFFFFFF :: non_neg_integer(),
     recovery_start_time = -576460752303423488 :: integer(),
-    max_datagram_size = 1200 :: pos_integer(),
+    max_datagram_size = ?MIN_UDP_PAYLOAD_SIZE :: pos_integer(),
     congestion_occurred = false :: boolean(),
     prev_state ::
         undefined | {non_neg_integer(), non_neg_integer(), integer(), boolean()}
@@ -54,7 +55,7 @@ get_ssthresh(#state{ssthresh = S}) -> S.
 -doc "Initialize NewReno state with default 1200-byte MSS and computed initial window.".
 -spec init() -> #state{}.
 init() ->
-    MSS = 1200,
+    MSS = ?MIN_UDP_PAYLOAD_SIZE,
     #state{cwnd = initial_window(MSS), max_datagram_size = MSS}.
 
 -spec initial_window(pos_integer()) -> non_neg_integer().
@@ -103,16 +104,17 @@ on_congestion_event(State, _LostBytes, _BytesInFlight, SentTime) ->
     end.
 
 -doc """
-Reset the congestion window to `initial_window(MSS)` after an idle
-period (RFC 9002 Section 7.8). Recovery period and the spurious-loss
-snapshot are also cleared since neither survives a fresh start.
+Restart the window after one restart timeout of idle time (RFC 9002
+§7.8, RFC 5681 §4.1). The window halves, but not below the initial
+window. `ssthresh` becomes at least 3/4 of the old window. The recovery
+period and the rollback snapshot are cleared.
 """.
 -spec on_idle_reset(#state{}) -> #state{}.
-on_idle_reset(#state{max_datagram_size = MSS} = State) ->
+on_idle_reset(#state{cwnd = Cwnd, ssthresh = Ssthresh, max_datagram_size = MSS} = State) ->
     State#state{
-        cwnd = initial_window(MSS),
+        cwnd = max(Cwnd div 2, min(initial_window(MSS), Cwnd)),
+        ssthresh = max(Ssthresh, (Cwnd * 3) div 4),
         recovery_start_time = -576460752303423488,
-        congestion_occurred = false,
         prev_state = undefined
     }.
 
@@ -170,10 +172,10 @@ acknowledged. No-op when no rollback snapshot is available (e.g. the
 window has already grown past the saved value or the snapshot was
 consumed).
 """.
--spec on_spurious_congestion(#state{}) -> #state{}.
-on_spurious_congestion(#state{prev_state = undefined} = State) ->
+-spec on_spurious_congestion(#state{}, non_neg_integer()) -> #state{}.
+on_spurious_congestion(#state{prev_state = undefined} = State, _SpuriousBytes) ->
     State;
-on_spurious_congestion(#state{prev_state = {Cwnd, Ssthresh, RST, CongOcc}} = State) ->
+on_spurious_congestion(#state{prev_state = {Cwnd, Ssthresh, RST, CongOcc}} = State, _SpuriousBytes) ->
     State#state{
         cwnd = Cwnd,
         ssthresh = Ssthresh,
@@ -184,7 +186,7 @@ on_spurious_congestion(#state{prev_state = {Cwnd, Ssthresh, RST, CongOcc}} = Sta
 
 -doc "Set the maximum datagram size, recalculating cwnd if still at the initial window.".
 -spec set_max_datagram_size(#state{}, pos_integer()) -> #state{}.
-set_max_datagram_size(State, Size) when Size >= 1200 ->
+set_max_datagram_size(State, Size) when Size >= ?MIN_UDP_PAYLOAD_SIZE ->
     #state{congestion_occurred = CongOccurred, max_datagram_size = OldMSS} = State,
     case CongOccurred of
         false ->

@@ -188,3 +188,13 @@ decode_error_tagged_paths_test_() ->
         {Name, fun() -> ?assertEqual({error, R}, nquic_transport:decode(Bin, Role)) end}
      || {Name, Bin, Role, R} <- Cases
     ].
+
+absent_ack_delay_params_decode_to_rfc_defaults_test() ->
+    {ok, Decoded} = nquic_transport:decode(<<16#0f, 4, 1, 2, 3, 4>>, client),
+    ?assertEqual(25, Decoded#transport_params.max_ack_delay),
+    ?assertEqual(3, Decoded#transport_params.ack_delay_exponent).
+
+local_max_ack_delay_is_advertised_test() ->
+    Local = #transport_params{initial_source_connection_id = <<1, 2, 3, 4>>},
+    {ok, Decoded} = nquic_transport:decode(nquic_transport:encode(Local), client),
+    ?assertEqual(10, Decoded#transport_params.max_ack_delay).

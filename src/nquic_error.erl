@@ -51,6 +51,7 @@ non-HTTP QUIC consumer and independently releasable.
 """.
 
 -include("nquic_frame.hrl").
+
 %%%-----------------------------------------------------------------------------
 %% EXPORTS - CONSTRUCTORS
 %%%-----------------------------------------------------------------------------

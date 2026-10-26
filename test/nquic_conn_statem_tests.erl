@@ -1244,27 +1244,27 @@ schedule_deferred_flush_sends_message_test() ->
     end.
 
 is_ack_eliciting_empty_test() ->
-    ?assertEqual(false, nquic_protocol_ack:is_ack_eliciting([])).
+    ?assertEqual(false, nquic_loss:is_ack_eliciting([])).
 
 is_ack_eliciting_ack_only_test() ->
-    ?assertEqual(false, nquic_protocol_ack:is_ack_eliciting([#ack{}])).
+    ?assertEqual(false, nquic_loss:is_ack_eliciting([#ack{}])).
 
 is_ack_eliciting_padding_only_test() ->
-    ?assertEqual(false, nquic_protocol_ack:is_ack_eliciting([#padding{}])).
+    ?assertEqual(false, nquic_loss:is_ack_eliciting([#padding{}])).
 
 is_ack_eliciting_close_only_test() ->
-    ?assertEqual(false, nquic_protocol_ack:is_ack_eliciting([#connection_close{}])).
+    ?assertEqual(false, nquic_loss:is_ack_eliciting([#connection_close{}])).
 
 is_ack_eliciting_non_ack_test() ->
-    ?assertEqual(true, nquic_protocol_ack:is_ack_eliciting([#ping{}])).
+    ?assertEqual(true, nquic_loss:is_ack_eliciting([#ping{}])).
 
 is_ack_eliciting_mixed_test() ->
-    ?assertEqual(true, nquic_protocol_ack:is_ack_eliciting([#ack{}, #padding{}, #ping{}])).
+    ?assertEqual(true, nquic_loss:is_ack_eliciting([#ack{}, #padding{}, #ping{}])).
 
 is_ack_eliciting_all_non_eliciting_test() ->
     ?assertEqual(
         false,
-        nquic_protocol_ack:is_ack_eliciting([#ack{}, #padding{}, #connection_close{}])
+        nquic_loss:is_ack_eliciting([#ack{}, #padding{}, #connection_close{}])
     ).
 
 handle_recv_stream_data_read_test() ->

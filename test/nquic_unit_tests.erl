@@ -411,7 +411,7 @@ loss_get_timer_empty_test() ->
 loss_detect_no_loss_test() ->
     State = nquic_loss:init(),
     Now = os:system_time(microsecond),
-    {ok, State1, Lost} = nquic_loss:detect_loss(State, application, Now),
+    {ok, State1, Lost} = nquic_loss:detect_loss(State, application, Now, 25_000),
     ?assertEqual([], Lost),
     ?assertEqual(State, State1).
 
@@ -2913,42 +2913,42 @@ recv_socket_options_no_ecn_test() ->
 
 ecn_process_undefined_test() ->
     State = nquic_loss:init(),
-    State2 = nquic_loss:process_ecn_counts(State, application, undefined),
+    State2 = nquic_loss:process_ecn_counts(State, application, undefined, 0),
     ?assertEqual(nquic_loss:get_cwnd(State), nquic_loss:get_cwnd(State2)).
 
 ecn_process_first_no_ce_test() ->
     State = nquic_loss:init(),
-    State2 = nquic_loss:process_ecn_counts(State, application, {10, 0, 0}),
+    State2 = nquic_loss:process_ecn_counts(State, application, {10, 0, 0}, 0),
     ?assertEqual(nquic_loss:get_cwnd(State), nquic_loss:get_cwnd(State2)).
 
 ecn_ce_increase_reduces_cwnd_test() ->
     State0 = nquic_loss:init(),
-    State1 = nquic_loss:process_ecn_counts(State0, application, {5, 0, 0}),
+    State1 = nquic_loss:process_ecn_counts(State0, application, {5, 0, 0}, 0),
     CwndBefore = nquic_loss:get_cwnd(State1),
-    State2 = nquic_loss:process_ecn_counts(State1, application, {8, 0, 1}),
+    State2 = nquic_loss:process_ecn_counts(State1, application, {8, 0, 1}, 0),
     CwndAfter = nquic_loss:get_cwnd(State2),
     ?assert(CwndAfter < CwndBefore).
 
 ecn_ce_same_no_reduce_test() ->
     State0 = nquic_loss:init(),
-    State1 = nquic_loss:process_ecn_counts(State0, application, {5, 0, 2}),
+    State1 = nquic_loss:process_ecn_counts(State0, application, {5, 0, 2}, 0),
     CwndBefore = nquic_loss:get_cwnd(State1),
-    State2 = nquic_loss:process_ecn_counts(State1, application, {8, 0, 2}),
+    State2 = nquic_loss:process_ecn_counts(State1, application, {8, 0, 2}, 0),
     CwndAfter = nquic_loss:get_cwnd(State2),
     ?assertEqual(CwndBefore, CwndAfter).
 
 ecn_validation_failure_disables_test() ->
     State0 = nquic_loss:init(),
     State1 = nquic_loss:set_ecn_enabled(State0, true),
-    State2 = nquic_loss:process_ecn_counts(State1, application, {5, 3, 2}),
+    State2 = nquic_loss:process_ecn_counts(State1, application, {5, 3, 2}, 0),
     ?assert(nquic_loss:is_ecn_enabled(State2)),
-    State3 = nquic_loss:process_ecn_counts(State2, application, {4, 2, 2}),
+    State3 = nquic_loss:process_ecn_counts(State2, application, {4, 2, 2}, 0),
     ?assertNot(nquic_loss:is_ecn_enabled(State3)).
 
 ecn_per_space_isolation_test() ->
     State0 = nquic_loss:init(),
-    State1 = nquic_loss:process_ecn_counts(State0, initial, {3, 0, 1}),
-    State2 = nquic_loss:process_ecn_counts(State1, application, {5, 0, 0}),
+    State1 = nquic_loss:process_ecn_counts(State0, initial, {3, 0, 1}, 0),
+    State2 = nquic_loss:process_ecn_counts(State1, application, {5, 0, 0}, 0),
     CwndAfterCE = nquic_loss:get_cwnd(State1),
     CwndAfterNoCE = nquic_loss:get_cwnd(State2),
     ?assertEqual(CwndAfterCE, CwndAfterNoCE).
@@ -2982,8 +2982,8 @@ path_stats_bytes_in_flight_test() ->
 
 path_stats_ecn_counters_summed_test() ->
     State0 = nquic_loss:init(),
-    State1 = nquic_loss:process_ecn_counts(State0, application, {3, 0, 1}),
-    State2 = nquic_loss:process_ecn_counts(State1, handshake, {2, 0, 1}),
+    State1 = nquic_loss:process_ecn_counts(State0, application, {3, 0, 1}, 0),
+    State2 = nquic_loss:process_ecn_counts(State1, handshake, {2, 0, 1}, 0),
     Stats = nquic_loss:path_stats(State2),
     ?assertEqual(2, maps:get(peer_ecn_ce, Stats)),
     ?assertEqual(7, maps:get(peer_ecn_total, Stats)).

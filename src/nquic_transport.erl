@@ -47,6 +47,8 @@ connection ID management, and more.
 -define(PARAM_VERSION_INFORMATION, 16#11).
 -define(PARAM_MAX_DATAGRAM_FRAME_SIZE, 16#20).
 
+-define(DEFAULT_MAX_ACK_DELAY_MS, 25).
+
 -spec apply_param(non_neg_integer(), binary(), params(), client | server) ->
     {ok, params()} | {error, term()}.
 apply_param(?PARAM_ORIGINAL_DEST_CID, Val, Acc, SenderRole) ->
@@ -66,7 +68,7 @@ apply_param(?PARAM_STATELESS_RESET_TOKEN, Val, Acc, SenderRole) ->
 apply_param(?PARAM_MAX_UDP_PAYLOAD_SIZE, Val, Acc, _SenderRole) ->
     {ok, ValInt, _} = nquic_varint:decode(Val),
     if
-        ValInt < 1200 -> {error, transport_parameter_error};
+        ValInt < ?MIN_UDP_PAYLOAD_SIZE -> {error, transport_parameter_error};
         true -> {ok, Acc#transport_params{max_udp_payload_size = ValInt}}
     end;
 apply_param(?PARAM_INITIAL_MAX_DATA, Val, Acc, _SenderRole) ->
@@ -139,7 +141,8 @@ apply_param(_ID, _Val, Acc, _SenderRole) ->
 -spec decode(binary(), client | server) ->
     {ok, params()} | {error, nquic_error:any_reason()}.
 decode(Bin, SenderRole) ->
-    case decode_loop(Bin, SenderRole, #transport_params{}, #{}) of
+    Absent = #transport_params{max_ack_delay = ?DEFAULT_MAX_ACK_DELAY_MS},
+    case decode_loop(Bin, SenderRole, Absent, #{}) of
         {ok, Params, Seen} ->
             validate_required(Params, Seen, SenderRole);
         Error ->

@@ -8,11 +8,12 @@ across all packet types (Initial, Handshake, 1-RTT).
 
 -include("nquic_frame.hrl").
 -include("nquic_packet.hrl").
+-include("nquic_transport.hrl").
 -export([send_initial_packet/6, send_initial_packet/7]).
 -export([send_handshake_packet/6, send_handshake_packet/7]).
 -export([send_app_packet/5]).
 -export([send_close_frame/3]).
--export([find_highest_key_level/1, hp_sample/3]).
+-export([find_highest_key_level/1]).
 
 -doc "Send a 1-RTT packet with the specified frame.".
 -spec send_app_packet(
@@ -104,14 +105,6 @@ find_highest_key_level(Keys) ->
             end
     end.
 
--spec hp_sample(binary(), binary(), non_neg_integer()) -> binary().
-hp_sample(Ciphertext, _Tag, SampleOff) when byte_size(Ciphertext) >= SampleOff + 16 ->
-    <<_:SampleOff/binary, Sample:16/binary, _/binary>> = Ciphertext,
-    Sample;
-hp_sample(Ciphertext, Tag, SampleOff) ->
-    <<_:SampleOff/binary, Sample:16/binary, _/binary>> = <<Ciphertext/binary, Tag/binary>>,
-    Sample.
-
 -doc "Send a Handshake packet with the specified frames.".
 -spec send_handshake_packet(
     nquic_socket:t(),
@@ -171,7 +164,7 @@ send_initial_packet(Socket, Peer, DCID, SCID, Keys, PNFrames) ->
 send_initial_packet(Socket, Peer, DCID, SCID, Keys, {PN, Frames}, Version) ->
     Payload0 = [nquic_frame:encode(F) || F <- Frames],
     PayloadSize0 = iolist_size(Payload0),
-    PadLen = max(0, 1200 - PayloadSize0),
+    PadLen = max(0, ?MIN_UDP_PAYLOAD_SIZE - PayloadSize0),
     Payload = [Payload0, <<0:(PadLen * 8)>>],
 
     Header = #long_header{
@@ -200,7 +193,7 @@ send_long_packet(Socket, Peer, Header, Payload, #{key := Key, iv := IV, hp := _}
     PnOffset = byte_size(HeaderBin) - PnLen,
 
     {Ciphertext, Tag} = nquic_crypto:encrypt(aes_128_gcm, Key, IV, PN, HeaderBin, Payload),
-    Sample = hp_sample(Ciphertext, Tag, 4 - PnLen),
+    Sample = nquic_hp:sample(Ciphertext, Tag, 4 - PnLen),
     Mask = nquic_hp:generate_mask_from_keys(Keys, aes_128_gcm, Sample),
     {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, true),
     MaskedPacket = [MaskedHeader, Ciphertext, Tag],
@@ -225,7 +218,7 @@ send_short_packet(Socket, Peer, Header, Payload, #{key := Key, iv := IV, hp := _
     PnOffset = byte_size(HeaderBin) - PnLen,
 
     {Ciphertext, Tag} = nquic_crypto:encrypt(aes_128_gcm, Key, IV, PN, HeaderBin, Payload),
-    Sample = hp_sample(Ciphertext, Tag, 4 - PnLen),
+    Sample = nquic_hp:sample(Ciphertext, Tag, 4 - PnLen),
     Mask = nquic_hp:generate_mask_from_keys(Keys, aes_128_gcm, Sample),
     {MaskedHeader, _} = nquic_hp:mask_header(Mask, HeaderBin, PnOffset, false),
     MaskedPacket = [MaskedHeader, Ciphertext, Tag],

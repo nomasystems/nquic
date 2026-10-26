@@ -13,9 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Complete the handshake after the loss of the server Initial. The handshake PTO probes every packet number space with packets in flight and resends their CRYPTO data, on the `nquic:accept` and the `conn_handler` server paths (RFC 9002 §6.2.4)
-- Keep the client PTO armed until a Handshake packet is acknowledged or the handshake is confirmed, and keep the client PTO backoff on Initial ACKs (RFC 9002 §6.2.1, §6.2.2.1)
-- Restart the PTO only when an ack-eliciting packet is sent. Received datagrams and ACK-only flushes no longer push the PTO out (RFC 9002 §6.2, Appendix A.8)
+- Complete the handshake after the loss of the server Initial or the client Finished. The PTO probes every space with packets in flight, and a lost HANDSHAKE_DONE is sent again (RFC 9001 §4.9.2, RFC 9002 §6.2.4)
+- Restart the PTO only when an ack-eliciting packet is sent, and keep the client PTO armed until the handshake is confirmed. A 1-RTT probe carries data when data is available (RFC 9002 §6.2)
+- Remove the packets of a discarded Initial or Handshake space from the in-flight counters, and discard 1-RTT packets on the server until the client Finished (RFC 9001 §5.7, RFC 9002 §6.4)
+- Declare loss only at or below the largest acknowledged packet, run the time threshold loss timer, and take an RTT sample when the largest acknowledged packet is ACK-only (RFC 9002 §5.1, §6.1)
+- Send one ACK frame per flush with the measured ACK Delay, and advertise a `max_ack_delay` of 10 ms (RFC 9000 §13.2, §18.2)
+- Size the congestion window by the datagrams that the sender sends, and start an ECN-CE congestion event at the send time of the largest acknowledged packet (RFC 9002 §7.2, Appendix B.7)
+- Conform CUBIC to RFC 9438 §4. The window does not grow while the sender is application limited, the target is at most 1.5 times the window, K comes from the window at the start of congestion avoidance, and a rollback needs all lost bytes acknowledged. A datagram size change no longer crashes the owner with `badarith`
 
 ## [1.1.0] - 2026-09-30
 
