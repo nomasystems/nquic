@@ -32,6 +32,7 @@ all() ->
         library_mode_flush_notimers_test,
         library_mode_upgrade_recv_batch_test,
         datagram_roundtrip_test,
+        request_response_one_datagram_each_way_test,
         server_short_stream_reclamation_test,
         compat_version_negotiation_v2_test,
         compat_version_negotiation_default_v1_test
@@ -611,6 +612,61 @@ library_mode_upgrade_recv_batch_test(_Config) ->
     {ok, _} = nquic_lib:close(ClientCtx3),
     try_ignore(fun() -> gen_server:stop(Listener) end),
     ok.
+
+request_response_one_datagram_each_way_test(_Config) ->
+    {ok, Listener} = start_listener(0),
+    {ok, Port} = nquic:get_port(Listener),
+    {ClientDrv, ServerDrv, Helper} = establish(Port, Listener),
+    {ok, StreamId} = nquic_ctx_driver:open_stream(ClientDrv, #{type => bidi}),
+    ok = nquic_ctx_driver:send(ClientDrv, StreamId, <<"warmup">>),
+    {ok, SStreamId} = nquic_ctx_driver:accept_stream(ServerDrv, 5000),
+    ok = echo_rounds(ClientDrv, ServerDrv, StreamId, SStreamId, <<"warmup">>, 5),
+    {ok, {_, ClientPort}} = nquic_ctx_driver:sockname(ClientDrv),
+    [ClientSocket] = [
+        S
+     || S <- socket:which_sockets(),
+        {ok, #{port := P}} <- [socket:sockname(S)],
+        P =:= ClientPort
+    ],
+    Before = socket_packet_counters(ClientSocket),
+    Requests = 100,
+    ok = nquic_ctx_driver:send(ClientDrv, StreamId, <<"request">>),
+    ok = echo_rounds(ClientDrv, ServerDrv, StreamId, SStreamId, <<"request">>, Requests),
+    {Sent, Received} = counters_delta(Before, socket_packet_counters(ClientSocket)),
+    ct:pal("datagrams for ~p requests: client sent ~p, received ~p", [Requests, Sent, Received]),
+    ?assert(Sent < Requests * 3 div 2),
+    ?assert(Received < Requests * 3 div 2),
+    teardown(ClientDrv, ServerDrv, Helper),
+    try_ignore(fun() -> gen_server:stop(Listener) end),
+    ok.
+
+echo_rounds(ClientDrv, ServerDrv, StreamId, SStreamId, Payload, Rounds) ->
+    Size = byte_size(Payload),
+    lists:foreach(
+        fun(Round) ->
+            {ok, Payload} = recv_exact(ServerDrv, SStreamId, Size, <<>>),
+            ok = nquic_ctx_driver:send(ServerDrv, SStreamId, Payload),
+            {ok, Payload} = recv_exact(ClientDrv, StreamId, Size, <<>>),
+            case Round < Rounds of
+                true -> ok = nquic_ctx_driver:send(ClientDrv, StreamId, Payload);
+                false -> ok
+            end
+        end,
+        lists:seq(1, Rounds)
+    ).
+
+recv_exact(_Drv, _StreamId, Size, Acc) when byte_size(Acc) =:= Size ->
+    {ok, Acc};
+recv_exact(Drv, StreamId, Size, Acc) ->
+    {ok, Data, nofin} = nquic_ctx_driver:recv(Drv, StreamId, 5000),
+    recv_exact(Drv, StreamId, Size, <<Acc/binary, Data/binary>>).
+
+socket_packet_counters(Socket) ->
+    #{counters := #{write_pkg := Written, read_pkg := Read}} = socket:info(Socket),
+    {Written, Read}.
+
+counters_delta({Written0, Read0}, {Written1, Read1}) ->
+    {Written1 - Written0, Read1 - Read0}.
 
 %%%-------------------------------------------------------------------
 %%% RFC 9221 unreliable DATAGRAM round-trip over the production ctx.

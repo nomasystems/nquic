@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ip` and `ipv6_v6only` listen options: the local address of every receiver socket. An IPv6 address such as `{0,0,0,0,0,0,0,0}` with `ipv6_v6only => false` serves IPv6 and IPv4 peers on one port
 
+### Changed
+
+- The response packet carries the ACK of a single request packet. A flush with no other frame holds the ACK of one ack-eliciting packet while the endpoint has nothing in flight, until the next frame or the 1 ms `ack_delay` timer (RFC 9000 §13.2.1). Request/response traffic sends one datagram per request in each direction instead of two
+
 ### Fixed
 
 - Complete the handshake after the loss of the server Initial or the client Finished. The PTO probes every space with packets in flight, and a lost HANDSHAKE_DONE is sent again (RFC 9001 §4.9.2, RFC 9002 §6.2.4)

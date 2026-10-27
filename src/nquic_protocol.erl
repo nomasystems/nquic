@@ -362,6 +362,10 @@ if there is nothing to flush.
 The timer actions restart the PTO only when the flush sent an
 ack-eliciting packet (RFC 9002 §6.2). A flush of ACK-only packets
 leaves the PTO timer as it is.
+The ACK of one application packet stays pending when the flush has no
+other frame to send (`nquic_protocol_ack:is_ack_due/1`). The next frame
+that the application queues carries it, or the `ack_delay` timer sends
+it.
 When the pacer blocks, the flush sends the Initial and Handshake frames,
 the pending ACK and the 1-RTT control frames, and keeps STREAM and
 DATAGRAM data queued. The timer actions then include the `pace` timer.
@@ -384,12 +388,19 @@ flush(
             pending_app_frames = [],
             pending_app_pre_encoded = []
         },
-        pending_ack_count = 0,
+        pending_ack_count = AckCount,
         streams_state = #conn_streams{pending_send_streams = PS}
     } = State
-) when map_size(PS) =:= 0 ->
-    {ok, State};
-flush(State0) ->
+) when map_size(PS) =:= 0, AckCount < 2 ->
+    case nquic_protocol_ack:is_ack_due(State) of
+        false -> {ok, State};
+        true -> flush_paced(State)
+    end;
+flush(State) ->
+    flush_paced(State).
+
+-spec flush_paced(state()) -> {ok, [iodata()], state(), [timeout_action()]} | {ok, state()}.
+flush_paced(State0) ->
     case nquic_loss:pacer_check(State0#conn_state.loss_state, monotonic_us()) of
         pass ->
             do_flush(all, State0);
@@ -579,14 +590,7 @@ handle_timeout(path_validation, State) ->
 handle_timeout(draining, State) ->
     {error, normal, State};
 handle_timeout(ack_delay, State) ->
-    case State#conn_state.pending_ack_count > 0 of
-        true ->
-            State1 = nquic_protocol_ack:force_queue_ack(application, State),
-            State2 = State1#conn_state{pending_ack_count = 0},
-            {ok, [], State2, []};
-        false ->
-            {ok, [], State, []}
-    end;
+    {ok, [], nquic_protocol_ack:queue_pending_ack(State), []};
 handle_timeout(pmtud, #conn_state{pmtud = PS} = State) when PS =/= undefined ->
     PS1 = nquic_pmtud:on_timeout(PS),
     {ok, [], State#conn_state{pmtud = PS1}, []};

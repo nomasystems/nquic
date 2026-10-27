@@ -626,6 +626,12 @@ handle_common(info, deferred_flush, _StateName, Data) ->
     {AllTimerActions, Data4} = nquic_protocol_timer:compute_timer_actions(Data3),
     StatemActions = nquic_conn_timers:timer_actions_to_statem(FlushTimerActions ++ AllTimerActions),
     {keep_state, Data4, ReplyActions ++ StatemActions};
+handle_common({timeout, ack_delay}, _, _StateName, Data) ->
+    {ok, [], Data1, []} = nquic_protocol:handle_timeout(ack_delay, Data),
+    {Data2, FlushTimerActions} = flush_and_send(Data1),
+    {AllTimerActions, Data3} = nquic_protocol_timer:compute_timer_actions(Data2),
+    StatemActions = nquic_conn_timers:timer_actions_to_statem(FlushTimerActions ++ AllTimerActions),
+    {keep_state, Data3, StatemActions};
 handle_common(info, {timeout, TimerRef, {send_wait_timeout, From}}, _StateName, Data) ->
     SS = Data#conn_state.streams_state,
     case nquic_conn_send_waiters:pop(From, TimerRef, SS#conn_streams.send_waiters) of

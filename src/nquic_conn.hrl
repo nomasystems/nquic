@@ -147,6 +147,7 @@
     deferred_flush_pending = false :: boolean(),
 
     pending_ack_count = 0 :: non_neg_integer(),
+    ack_immediate = false :: boolean(),
 
     last_idle_ms :: non_neg_integer() | infinity | undefined,
     last_pto_ms :: nquic_protocol_timer:loss_detection_timer() | undefined,

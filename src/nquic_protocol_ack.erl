@@ -18,11 +18,12 @@ module-qualified.
 -export([
     apply_received_ranges_prune/3,
     build_ack_for_space/2,
-    force_queue_ack/2,
     insert_pn_range/2,
+    is_ack_due/1,
     maybe_queue_ack/3,
     merge_ranges/1,
     prune_received_ranges/2,
+    queue_pending_ack/1,
     ranges_to_ack_ranges/2,
     track_ecn_mark/3,
     track_received_pn/3,
@@ -60,6 +61,12 @@ apply_received_ranges_prune(Space, AckedFrames, State) ->
                     State#conn_state{pn_spaces = PnSpaces#{Space => NewSpaceMap}}
             end
     end.
+
+-spec ack_on_ce(nquic_socket:ecn_mark(), nquic_protocol:state()) -> nquic_protocol:state().
+ack_on_ce(ce, State) ->
+    State#conn_state{ack_immediate = true};
+ack_on_ce(_ECN, State) ->
+    State.
 
 -spec build_ack_for_space(nquic_packet:space(), nquic_protocol:state()) -> {ok, #ack{}} | none.
 build_ack_for_space(Space, #conn_state{pn_spaces = PnSpaces} = State) ->
@@ -134,6 +141,24 @@ insert_pn_range(PN, [{High, Low} | Rest]) ->
             [{High, Low} | insert_pn_range(PN, Rest)]
     end.
 
+-doc """
+Whether the pending application ACK must leave on a flush that carries
+no other frame. One ack-eliciting packet can wait for up to
+`max_ack_delay` (RFC 9000 §13.2.1), so that the response of the
+application carries the ACK. The ACK leaves at once after two
+ack-eliciting packets (§13.2.2), after a packet out of order or after a
+gap, after an ECN-CE mark (§13.2.1), and while this endpoint has
+ack-eliciting packets in flight. In the last case the peer is in a
+transfer and a held ACK stalls its ACK clock.
+""".
+-spec is_ack_due(nquic_protocol:state()) -> boolean().
+is_ack_due(#conn_state{pending_ack_count = 0}) ->
+    false;
+is_ack_due(#conn_state{pending_ack_count = 1, ack_immediate = false, loss_state = LS}) ->
+    nquic_loss:has_ack_eliciting_in_flight(LS);
+is_ack_due(_State) ->
+    true.
+
 -spec max_largest_acked([nquic_frame:t()], nquic_packet_number:t() | undefined) ->
     nquic_packet_number:t() | undefined.
 max_largest_acked([], Acc) ->
@@ -175,6 +200,14 @@ prune_received_ranges([{H, _L} | _Rest], Threshold) when H =< Threshold ->
     [];
 prune_received_ranges([{H, _L} | _Rest], Threshold) ->
     [{H, Threshold + 1}].
+
+-doc "Queue the pending application ACK as a frame and clear the pending state.".
+-spec queue_pending_ack(nquic_protocol:state()) -> nquic_protocol:state().
+queue_pending_ack(#conn_state{pending_ack_count = 0} = State) ->
+    State;
+queue_pending_ack(State) ->
+    State1 = force_queue_ack(application, State),
+    State1#conn_state{pending_ack_count = 0, ack_immediate = false}.
 
 -spec queue_ack_for_space(nquic_packet:space(), nquic_protocol:state()) -> nquic_protocol:state().
 queue_ack_for_space(initial, State) ->
@@ -226,16 +259,17 @@ ranges_to_ack_ranges(PrevLow, [{High, Low} | Rest]) ->
 -spec track_app_largest(
     nquic_packet_number:t(), #{nquic_packet:space() => map()}, nquic_protocol:state()
 ) -> nquic_protocol:state().
-track_app_largest(PN, PnSpaces, #conn_state{app_largest_received = Largest} = State) when
-    PN > Largest
-->
+track_app_largest(
+    PN, PnSpaces, #conn_state{app_largest_received = Largest, ack_immediate = Immediate} = State
+) when PN > Largest ->
     State#conn_state{
         app_largest_received = PN,
         app_largest_received_us = erlang:monotonic_time(microsecond),
+        ack_immediate = Immediate orelse PN > Largest + 1,
         pn_spaces = PnSpaces
     };
 track_app_largest(_PN, PnSpaces, State) ->
-    State#conn_state{pn_spaces = PnSpaces}.
+    State#conn_state{ack_immediate = true, pn_spaces = PnSpaces}.
 
 -doc "Increment the per-space ECN counter for the given mark.".
 -spec track_ecn_mark(nquic_packet:space(), nquic_socket:ecn_mark(), nquic_protocol:state()) ->
@@ -294,7 +328,7 @@ track_received_pn_and_ecn(application, PN, ECN, #conn_state{pn_spaces = PnSpaces
                 Old = maps:get(Key, SpaceMap1, 0),
                 SpaceMap1#{Key => Old + 1}
         end,
-    track_app_largest(PN, PnSpaces#{application => NewSpaceMap}, State);
+    track_app_largest(PN, PnSpaces#{application => NewSpaceMap}, ack_on_ce(ECN, State));
 track_received_pn_and_ecn(Space, PN, ECN, #conn_state{pn_spaces = PnSpaces} = State) ->
     SpaceMap = maps:get(Space, PnSpaces, #{next_pn => 0}),
     LargestReceived = maps:get(largest_received, SpaceMap, -1),

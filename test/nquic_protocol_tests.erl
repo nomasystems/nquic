@@ -2240,7 +2240,8 @@ ack_delay_matches_held_time_test() ->
     receive
     after HoldMs -> ok
     end,
-    {[#ack{delay = Delay}], _} = flush_acks(State1),
+    {ok, [], State2, []} = nquic_protocol:handle_timeout(ack_delay, State1),
+    {[#ack{delay = Delay}], _} = flush_acks(State2),
     Bound = erlang:monotonic_time(microsecond) - Before,
     Held = Delay bsl Exponent,
     ?assert(Held >= HoldMs * 1000 - (1 bsl Exponent)),
@@ -2277,3 +2278,88 @@ ack_timer_fires_within_advertised_max_ack_delay_test() ->
     {Actions, _} = nquic_protocol_timer:compute_timer_actions(State),
     {set_timer, ack_delay, TimerMs} = lists:keyfind(ack_delay, 2, Actions),
     ?assert(2 * TimerMs =< (State#conn_state.local_params)#transport_params.max_ack_delay).
+
+receive_app_packet_ecn(PN, ECN, State) ->
+    State1 = nquic_protocol_ack:track_received_pn_and_ecn(application, PN, ECN, State),
+    Header = #short_header{dcid = State#conn_state.dcid, packet_number = PN},
+    nquic_protocol_ack:maybe_queue_ack(Header, [#ping{}], State1).
+
+sent_frames(FirstPN, State) ->
+    [
+        Frames
+     || #sent_packet{packet_number = PN, frames = Frames} <-
+            nquic_loss:get_sent_packets(State#conn_state.loss_state),
+        PN >= FirstPN
+    ].
+
+single_eliciting_packet_ack_rides_on_response_test() ->
+    State0 = receive_app_packets([0], app_recv_state()),
+    {ok, State1} = nquic_protocol:flush(State0),
+    {Actions, State2} = nquic_protocol_timer:compute_timer_actions(State1),
+    ?assertMatch({set_timer, ack_delay, _}, lists:keyfind(ack_delay, 2, Actions)),
+    Stream = #stream{stream_id = 0, offset = 0, length = 3, data = <<"abc">>},
+    {ok, State3} = nquic_protocol_send_queues:queue_app_frame(Stream, State2),
+    FirstPN = State3#conn_state.app_next_pn,
+    {ok, [_], State4, _} = nquic_protocol:flush(State3),
+    ?assertMatch([[#ack{largest_acknowledged = 0}, #stream{}]], sent_frames(FirstPN, State4)),
+    ?assertEqual(0, State4#conn_state.pending_ack_count).
+
+two_eliciting_packets_ack_at_once_test() ->
+    ?assertMatch(
+        {[#ack{largest_acknowledged = 1, first_ack_range = 1}], _},
+        flush_acks(receive_app_packets([0, 1], app_recv_state()))
+    ).
+
+gap_acks_at_once_test() ->
+    {_, State1} = flush_acks(receive_app_packets([0, 1], app_recv_state())),
+    ?assertMatch(
+        {[#ack{largest_acknowledged = 3}], _}, flush_acks(receive_app_packets([3], State1))
+    ).
+
+out_of_order_packet_acks_at_once_test() ->
+    {_, State1} = flush_acks(receive_app_packets([0, 1, 3], app_recv_state())),
+    ?assertMatch(
+        {[#ack{largest_acknowledged = 3, first_ack_range = 3}], _},
+        flush_acks(receive_app_packets([2], State1))
+    ).
+
+in_order_packet_after_acked_gap_waits_test() ->
+    {_, State1} = flush_acks(receive_app_packets([0, 1, 3], app_recv_state())),
+    ?assertMatch({ok, _}, nquic_protocol:flush(receive_app_packets([4], State1))).
+
+ecn_ce_mark_acks_at_once_test() ->
+    {_, State1} = flush_acks(receive_app_packets([0, 1], app_recv_state())),
+    ?assertMatch({ok, _}, nquic_protocol:flush(receive_app_packet_ecn(2, ect0, State1))),
+    ?assertMatch(
+        {[#ack{largest_acknowledged = 2, ecn_counts = {0, 0, 1}}], _},
+        flush_acks(receive_app_packet_ecn(2, ce, State1))
+    ).
+
+single_packet_acked_at_once_with_own_data_in_flight_test() ->
+    Now = erlang:monotonic_time(microsecond),
+    State0 = (app_recv_state())#conn_state{
+        loss_state = send_stream_packets([1000], Now, nquic_loss:init(cubic))
+    },
+    {ok, State1} = nquic_protocol:flush(
+        receive_app_packets([0], State0#conn_state{
+            loss_state = nquic_loss:init(cubic)
+        })
+    ),
+    ?assertEqual(1, State1#conn_state.pending_ack_count),
+    ?assertMatch(
+        {[#ack{largest_acknowledged = 0}], _}, flush_acks(receive_app_packets([0], State0))
+    ).
+
+ack_delay_timeout_sends_held_ack_test() ->
+    {ok, State1} = nquic_protocol:flush(receive_app_packets([0], app_recv_state())),
+    {ok, [], State2, []} = nquic_protocol:handle_timeout(ack_delay, State1),
+    ?assertMatch({[#ack{largest_acknowledged = 0}], _}, flush_acks(State2)),
+    ?assertEqual(0, State2#conn_state.pending_ack_count).
+
+paced_flush_holds_single_ack_behind_stream_data_test() ->
+    State0 = paced_app_state(acked),
+    Stream = #stream{stream_id = 0, offset = 0, length = 3, data = <<"abc">>},
+    {ok, State1} = nquic_protocol_send_queues:queue_app_frame(Stream, State0),
+    {ok, [], State2, [{set_timer, pace, _}]} = nquic_protocol:flush(State1),
+    ?assertEqual(1, State2#conn_state.pending_ack_count),
+    ?assertEqual([Stream], (State2#conn_state.flow)#conn_flow.pending_app_frames).
