@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-27
+
 ### Added
 
 - `ip` and `ipv6_v6only` listen options: the local address of every receiver socket. An IPv6 address such as `{0,0,0,0,0,0,0,0}` with `ipv6_v6only => false` serves IPv6 and IPv4 peers on one port
